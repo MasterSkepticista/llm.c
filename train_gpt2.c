@@ -14,22 +14,22 @@ typedef struct {
 // the parameters of the model.
 #define NUM_PARAMETER_TENSORS 16
 typedef struct {
-  float* wte;  // (V, C)
-  float* wpe;  // (maxT, C)
-  float* ln1w;  // (L, C)
-  float* ln1b;  // (L, C)
-  float* qkvw;  // (L, 3*C, C)
-  float* qkvb;  // (L, 3*C)
-  float* attnprojw;  // (L, C, C)
-  float* attnprojb;  // (L, C)
-  float* ln2w;  // (L, C)
-  float* ln2b;  // (L, C)
-  float* fcw;  // (L, 4*C, C)
-  float* fcb;  // (L, 4*C)
-  float* fcprojw;  // (L, C, 4*C)
-  float* fcprojb;  // (L, C)
-  float* lnfw;  // (L, C) CHECK?
-  float* lnfb;  // (L, C) CHECK?
+  float *wte; // (V, C)
+  float *wpe; // (maxT, C)
+  float *ln1w; // (L, C)
+  float *ln1b; // (L, C)
+  float *qkvw; // (L, 3*C, C)
+  float *qkvb; // (L, 3*C)
+  float *attnprojw; // (L, C, C)
+  float *attnprojb; // (L, C)
+  float *ln2w; // (L, C)
+  float *ln2b; // (L, C)
+  float *fcw; // (L, 4*C, C)
+  float *fcb; // (L, 4*C)
+  float *fcprojw; // (L, C, 4*C)
+  float *fcprojb; // (L, C)
+  float *lnfw; // (L, C) CHECK?
+  float *lnfb; // (L, C) CHECK?
 } ParameterTensors;
 
 
