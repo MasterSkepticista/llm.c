@@ -63,3 +63,48 @@ extern inline void fread_check(void *ptr, size_t size, size_t nmemb, FILE *strea
   }
 }
 #define freadCheck(ptr, size, nmemb, stream) fread_check(ptr, size, nmemb, stream, __FILE__, __LINE__)
+
+
+/**
+ * @brief Closes a file and checks for errors.
+ *
+ * This function attempts to close the given file pointer. If the file
+ * fails to close, it prints an error message to stderr with the file
+ * name and line number where the function was called, and then exits
+ * the program with a failure status.
+ *
+ * @param fp The file pointer to be closed.
+ * @param file The name of the file where the function was called.
+ * @param line The line number where the function was called.
+ */
+extern inline void fclose_check(FILE *fp, const char *file, int line) {
+  if (fclose(fp) != 0) {
+    fprintf(stderr, "Failed to close file at %s:%d\n", file, line);
+    exit(EXIT_FAILURE);
+  }
+}
+#define fcloseCheck(fp) fclose_check(fp, __FILE__, __LINE__)
+
+
+/**
+ * @brief Allocates memory and checks for allocation failure.
+ *
+ * This function attempts to allocate a block of memory of the specified size.
+ * If the allocation fails, it prints an error message to stderr with the size
+ * of the requested memory, the file name, and the line number where the 
+ * allocation was attempted, and then exits the program with a failure status.
+ *
+ * @param size The size of the memory block to allocate, in bytes.
+ * @param file The name of the file where the allocation is attempted.
+ * @param line The line number in the file where the allocation is attempted.
+ * @return A pointer to the allocated memory block.
+ */
+extern inline void *malloc_check(size_t size, const char *file, int line) {
+  void *ptr = malloc(size);
+  if (ptr == NULL) {
+    fprintf(stderr, "Failed to allocate %zu bytes at %s:%d\n", size, file, line);
+    exit(EXIT_FAILURE);
+  }
+  return ptr;
+}
+#define mallocCheck(size) malloc_check(size, __FILE__, __LINE__)

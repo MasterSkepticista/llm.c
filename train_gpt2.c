@@ -72,7 +72,27 @@ void fill_in_parameter_sizes(size_t *param_sizes, GPT2Config config) {
   param_sizes[15] = C; // lnfb
 }
 
+float* malloc_and_point_parameters(ParameterTensors *params, size_t *param_sizes) {
+  size_t num_parameters = 0;
+  for (size_t i = 0; i < NUM_PARAMETER_TENSORS; i++) {
+    num_parameters += param_sizes[i];
+  }
 
+  // malloc for all parameters.
+  float *params_memory = (float *)mallocCheck(num_parameters * sizeof(float));
+  // get addresses of all param tensors.
+  float **ptrs[] = {
+    &params->wte, &params->wpe, &params->ln1w, &params->ln1b, &params->qkvw, &params->qkvb,
+    &params->attnprojw, &params->attnprojb, &params->ln2w, &params->ln2b, &params->fcw, &params->fcb,
+    &params->fcprojw, &params->fcprojb, &params->lnfw, &params->lnfb
+  };
+  float *params_memory_iterator = params_memory;
+  for (size_t i = 0; i < NUM_PARAMETER_TENSORS; i++) {
+    *(ptrs[i]) = params_memory_iterator;
+    params_memory_iterator += param_sizes[i];
+  }
+  return params_memory;
+}
 
 #define NUM_ACTIVATION_TENSORS 23
 typedef struct {
@@ -150,6 +170,8 @@ void gpt2_build_from_checkpoint(GPT2 *model, const char* checkpoint_path) {
 
   // read in all the parameters from the file.
   model->params_memory = malloc_and_point_parameters(&model->params, model->param_sizes);
+  freadCheck(model->params_memory, sizeof(float), num_parameters, model_file);
+  fcloseCheck(model_file);
 }
 
 int main() {
