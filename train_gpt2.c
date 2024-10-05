@@ -172,6 +172,18 @@ void gpt2_build_from_checkpoint(GPT2 *model, const char* checkpoint_path) {
   model->params_memory = malloc_and_point_parameters(&model->params, model->param_sizes);
   freadCheck(model->params_memory, sizeof(float), num_parameters, model_file);
   fcloseCheck(model_file);
+
+  // other inits.
+  model->acts_memory = NULL;
+  model->grads_memory = NULL;
+  model->m_memory = NULL;
+  model->v_memory = NULL;
+  model->grads_acts_memory = NULL;
+  model->inputs = NULL;
+  model->targets = NULL;
+  model->batch_size = 0;
+  model->seq_len = 0;
+  model->mean_loss = -1.0f;
 }
 
 int main() {
