@@ -117,8 +117,8 @@ typedef struct {
   float* v_memory;
   // the activations of the model, and their sizes.
   ActivationTensors acts;
-  size_t act_sizes[NUM_ACTIVATION_TENSORS];
-  float* act_memory;
+  size_t acts_sizes[NUM_ACTIVATION_TENSORS];
+  float* acts_memory;
   size_t num_activations;  // TODO: Why?
   // gradients of the activations.
   ActivationTensors grads_acts;
