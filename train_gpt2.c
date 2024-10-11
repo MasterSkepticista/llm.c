@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include "llmc/utils.h"
+#include "llmc/dataloader.h"
 
 // GPT-2 Model definition.
 typedef struct {
@@ -191,4 +192,13 @@ int main() {
   // build the GPT-2 model from a checkpoint.
   GPT2 model;
   gpt2_build_from_checkpoint(&model, "gpt2_124M.bin");
+
+  // build the dataloaders.
+  const char *train_tokens = "dev/data/tinyshakespeare/tiny_shakespeare_train.bin";
+  const char *val_tokens = "dev/data/tinyshakespeare/tiny_shakespeare_val.bin";
+  int B = 4; // batch size 4
+  int T = 64; // sequence length 64
+  DataLoader train_loader, val_loader;
+  dataloader_init(&train_loader, train_tokens, B, T, 0, 1, 1);
+  dataloader_init(&val_loader, val_tokens, B, T, 0, 1, 0);
 }
