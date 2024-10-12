@@ -4,6 +4,9 @@
   functions and check their return code, with additional debug information
   wherever applicable.  
 */
+#ifndef UTILS_H
+#define UTILS_H
+
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -108,3 +111,29 @@ extern inline void *malloc_check(size_t size, const char *file, int line) {
   return ptr;
 }
 #define mallocCheck(size) malloc_check(size, __FILE__, __LINE__)
+
+/**
+ * @brief Safely seeks to a specified position in a file and checks for errors.
+ *
+ * This function attempts to move the file position indicator for the given file stream
+ * to a new position defined by the offset and whence parameters. If the operation fails,
+ * it prints an error message to stderr and terminates the program.
+ *
+ * @param fp Pointer to the FILE object that identifies the stream.
+ * @param off The offset in bytes to move the file position indicator.
+ * @param whence The position from where offset is added. It can be one of the following:
+ *               - SEEK_SET: Beginning of file
+ *               - SEEK_CUR: Current position of the file pointer
+ *               - SEEK_END: End of file
+ * @param file The name of the source file where the function is called (usually passed as __FILE__).
+ * @param line The line number in the source file where the function is called (usually passed as __LINE__).
+ */
+extern inline void fseek_check(FILE *fp, long off, int whence, const char *file, int line) {
+  if (fseek(fp, off, whence) != 0) {
+    fprintf(stderr, "Failed to seek file to offset %ld, whence %d %s:%d\n", off, whence, file, line);
+    exit(EXIT_FAILURE);
+  }
+}
+#define fseekCheck(fp, off, whence) fseek_check(fp, off, whence, __FILE__, __LINE__)
+
+#endif

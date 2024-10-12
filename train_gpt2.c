@@ -201,4 +201,12 @@ int main() {
   DataLoader train_loader, val_loader;
   dataloader_init(&train_loader, train_tokens, B, T, 0, 1, 1);
   dataloader_init(&val_loader, val_tokens, B, T, 0, 1, 0);
+  printf("Train batches: %zu\n", train_loader.num_tokens / (B * T));
+  printf("Val batches: %zu\n", val_loader.num_tokens / (B * T));
+
+  // debug
+  for (size_t i = 0; i < val_loader.shard_num_samples; i++) {
+    printf("%d\t", val_loader.intra_shard_indices[i]);
+  }
+  printf("\n");
 }
