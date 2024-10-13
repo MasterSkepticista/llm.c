@@ -41,5 +41,18 @@ void tokenizer_init(Tokenizer *tokenizer, const char *filename) {
   
   // read in all the tokens
   unsigned char length;
-  // tokenizer->token_table
+  tokenizer->token_table = (char**)mallocCheck(tokenizer->vocab_size * sizeof(char *));
+  for (uint32_t i = 0; i < tokenizer->vocab_size; i++) {
+    freadCheck(&length, sizeof(unsigned char), 1, file);
+    assert(length > 0);
+    char *token_bytes = (char*)mallocCheck(length + 1);
+    freadCheck(token_bytes, sizeof(char), length, file);
+    token_bytes[length] = '\0';
+    tokenizer->token_table[i] = token_bytes;
+  }
+
+  // cleanup
+  fcloseCheck(file);
+  tokenizer->init_ok = 1;
+  printf("Tokenizer initialized.\n");
 }
