@@ -1,4 +1,9 @@
+/*
+This file trains the GPT-2 model on CPU.
+*/
 #include <stdio.h>
+#include <time.h>
+
 #include "llmc/utils.h"
 #include "llmc/dataloader.h"
 #include "llmc/tokenizer.h"
@@ -209,4 +214,52 @@ int main() {
   // Build the Tokenizer.
   Tokenizer tokenizer;
   tokenizer_init(&tokenizer, "gpt2_tokenizer.bin");
+
+  // some memory for generating samples from the model.
+  uint64_t rng_state = 42;
+  int *gen_tokens = (int*)mallocCheck(B * T * sizeof(int));
+  const int gen_steps = 64;
+
+  // train
+  struct timespec start, end;
+  for (int step = 0; step <=40; step++) {
+
+    // once in a while run eval.
+    if (step % 10 == 0) {
+      float val_loss = 0.0f;
+      dataloader_reset(&val_loader);
+      for (int i = 0; i < val_num_batches; i++) {
+        dataloader_next_batch(&val_loader);
+        // gpt2_forward(...)
+        val_loss += model.mean_loss;
+      }
+      val_loss /= val_num_batches;
+      printf("val_loss %f\n", val_loss);
+    }
+
+    // once in a while generate text.
+    if (step > 0 && step % 20 == 0) {
+      // fill up a buffer with EOT tokens
+      for (int i = 0; i < B * T; i++) {
+        gen_tokens[i] = tokenizer.eot_token;
+      }
+
+      // sample autoregressively.
+      printf("generating:\n---\n");
+      for (int i = 0; i < gen_steps; i++) {
+        // forward 
+      }
+      printf("\n---\n");
+    }
+
+    // do a train step.
+  }
+
+  // free
+  dataloader_free(&train_loader);
+  dataloader_free(&val_loader);
+  tokenizer_free(&tokenizer);
+  // gpt2_free(&model);
+  free(gen_tokens);
+  return 0;
 }

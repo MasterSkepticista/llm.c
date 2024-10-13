@@ -119,6 +119,16 @@ void prepare_intra_shard_indices_(DataLoader *loader) {
   random_permutation(loader->intra_shard_indices, (int) loader->shard_num_samples, &loader->shuffle_rng);
 }
 
+
+/**
+ * @brief Resets the DataLoader to its initial state.
+ *
+ * This function resets the current shard and sample indices to zero.
+ * If shuffling is enabled, it shuffles the shard indices and prepares
+ * intra-shard indices.
+ *
+ * @param loader Pointer to the DataLoader instance to reset.
+ */
 void dataloader_reset(DataLoader *loader) {
   loader->current_shard_idx = 0;
   loader->current_sample_idx = 0;
@@ -132,6 +142,84 @@ void dataloader_reset(DataLoader *loader) {
   if (loader->should_shuffle) {
     prepare_intra_shard_indices_(loader);
   }
+}
+
+/**
+ * @brief Advances the DataLoader to the next shard.
+ *
+ * If the DataLoader is at the final shard, it resets to the first shard.
+ * Otherwise, it advances to the next shard, resets the sample index, and
+ * loads the new shard. If shuffling is enabled, it prepares intra-shard indices.
+ *
+ * @param loader Pointer to the DataLoader instance.
+ */
+void dataloader_advance_(DataLoader *loader) {
+  // if at the final shard, reset to first shard.
+  if (loader->current_shard_idx == loader->glob_result.gl_pathc - 1) {
+    dataloader_reset(loader);
+    return;
+  }
+  // advance the loader by loading the next shard and resetting its position.
+  loader->current_shard_idx = (loader->current_shard_idx + 1) % loader->glob_result.gl_pathc;
+  loader->current_sample_idx = 0;
+  dataloader_load_shard_(loader, (int) loader->current_shard_idx);
+
+  if (loader->should_shuffle) {
+    prepare_intra_shard_indices_(loader);
+  }
+}
+
+/**
+ * @brief Loads a batch of data into the DataLoader.
+ *
+ * This function reads a batch of data from the tokens file and populates
+ * the inputs and targets buffers. It supports shuffling of data if enabled.
+ *
+ * @param loader Pointer to the DataLoader structure.
+ *
+ * Preconditions:
+ * - If shuffling is enabled, intra_shard_indices must not be NULL.
+ * - current_sample_idx must be less than shard_num_samples.
+ *
+ * The function calculates the appropriate offset in the file based on
+ * whether shuffling is enabled and reads the data into a buffer. It then
+ * transfers the data from the buffer to the inputs and targets arrays.
+ */
+void dataloader_load_batch(DataLoader *loader) {
+  assert(!loader->should_shuffle || (loader->should_shuffle && loader->intra_shard_indices != NULL));
+  assert(loader->current_sample_idx < loader->shard_num_samples); // check batches are available.
+  size_t idx = loader->should_shuffle ? loader->intra_shard_indices[loader->current_sample_idx] : loader->current_sample_idx;
+  size_t global_batch_offset_bytes = idx * loader->total_batch_size_bytes;
+  // each process would have a local offset. for single-process, local offset is zero.
+  int64_t current_offset = loader->header_bytes + global_batch_offset_bytes + loader->local_batch_offset_bytes;
+
+  size_t B = loader->B;
+  size_t T = loader->T;
+  // read BT+1 uint16_t tokens from the file to buffer.
+  fseekCheck(loader->tokens_file, current_offset, SEEK_SET);
+  freadCheck(loader->buffer, sizeof(uint16_t), B*T+1, loader->tokens_file);
+  // move from buffer to inputs/targets.
+  for (int i = 0; i < B*T; i++) {
+    loader->inputs[i] = (int)loader->buffer[i];
+    loader->targets[i] = (int)loader->buffer[i+1];
+  }
+}
+
+/**
+ * @brief Loads the next batch of data from the DataLoader.
+ *
+ * If the current sample index is at the end of the shard, it advances to the next shard.
+ * Then, it loads the batch and increments the current sample index.
+ *
+ * @param loader Pointer to the DataLoader instance.
+ */
+void dataloader_next_batch(DataLoader *loader) {
+  // if at the end of the shard, move to the next shard.
+  if (loader->current_sample_idx >= loader->shard_num_samples) {
+    dataloader_advance_(loader);
+  }
+  dataloader_load_batch(loader);
+  loader->current_sample_idx += 1;
 }
 
 /**
@@ -205,6 +293,18 @@ void dataloader_init(DataLoader *loader,
 
   // reset the loader
   dataloader_reset(loader);
+}
+
+void dataloader_free(DataLoader *loader) {
+  free(loader->buffer);
+  free(loader->inputs);
+  free(loader->targets);
+  if (loader->should_shuffle) {
+    free(loader->shard_indices);
+    free(loader->intra_shard_indices);
+  }
+  fcloseCheck(loader->tokens_file);
+  globfree(&loader->glob_result);
 }
 
 #endif

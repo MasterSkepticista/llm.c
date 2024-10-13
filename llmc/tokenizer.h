@@ -56,3 +56,12 @@ void tokenizer_init(Tokenizer *tokenizer, const char *filename) {
   tokenizer->init_ok = 1;
   printf("Tokenizer initialized.\n");
 }
+
+void tokenizer_free(Tokenizer *tokenizer) {
+  if (tokenizer->init_ok) {
+    for (int i = 0; i < tokenizer->vocab_size; i++) {
+      free(tokenizer->token_table[i]);
+    }
+    free(tokenizer->token_table);
+  }
+}
