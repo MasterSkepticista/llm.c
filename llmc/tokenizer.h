@@ -57,6 +57,18 @@ void tokenizer_init(Tokenizer *tokenizer, const char *filename) {
   printf("Tokenizer initialized.\n");
 }
 
+const char *tokenizer_decode(Tokenizer *tokenizer, uint32_t token_id) {
+  if (tokenizer->init_ok == 0) {
+    return NULL;
+  }
+  if (token_id < tokenizer->vocab_size) {
+    return tokenizer->token_table[token_id];
+  } else {
+    printf("Invalid token %d\n.", token_id);
+    return NULL;
+  }
+}
+
 void tokenizer_free(Tokenizer *tokenizer) {
   if (tokenizer->init_ok) {
     for (int i = 0; i < tokenizer->vocab_size; i++) {
