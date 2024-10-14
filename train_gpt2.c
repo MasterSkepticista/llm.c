@@ -3,6 +3,7 @@ This file trains the GPT-2 model on CPU.
 */
 #include <stdio.h>
 #include <time.h>
+#include <string.h>
 
 #include "llmc/utils.h"
 #include "llmc/dataloader.h"
@@ -143,6 +144,65 @@ typedef struct {
   float *probs; // (B, T, V)
   float *losses; // (B, T)
 } ActivationTensors;
+
+/**
+ * Fills in the activation sizes for various layers and operations in the GPT-2 model.
+ */
+void fill_in_activation_sizes(size_t *act_sizes, GPT2Config config, int B, int T) {
+  size_t C = config.channels;
+  size_t L = config.num_layers;
+  size_t NH = config.num_heads;
+  size_t Vp = config.padded_vocab_size;
+  act_sizes[0] = B * T * C; // encoded
+  act_sizes[1] = L * B * T * C; // ln1
+  act_sizes[2] = L * B * T; // ln1_mean
+  act_sizes[3] = L * B * T; // ln1_rstd
+  act_sizes[4] = L * B * T * 3 * C; // qkv
+  act_sizes[5] = L * B * T * C; // atty
+  act_sizes[6] = L * B * NH * T * T; // preatt
+  act_sizes[7] = L * B * NH * T * T; // att
+  act_sizes[8] = L * B * T * C; // attproj
+  act_sizes[9] = L * B * T * C; // residual2
+  act_sizes[10] = L * B * T * C; // ln2
+  act_sizes[11] = L * B * T; // ln2_mean
+  act_sizes[12] = L * B * T; // ln2_rstd
+  act_sizes[13] = L * B * T * 4 * C; // fch
+  act_sizes[14] = L * B * T * 4 * C; // fch_gelu
+  act_sizes[15] = L * B * T * C; // fcproj
+  act_sizes[16] = L * B * T * C; // residual3
+  act_sizes[17] = B * T * C; // lnf
+  act_sizes[18] = B * T; // lnf_mean
+  act_sizes[19] = B * T; // lnf_rstd
+  act_sizes[20] = B * T * Vp; // logits
+  act_sizes[21] = B * T * Vp; // probs
+  act_sizes[22] = B * T; // losses
+}
+
+/**
+ * Allocates memory for all activation tensors and sets pointers to the respective memory locations.
+ */
+float *malloc_and_point_activations(ActivationTensors *acts, size_t *act_sizes) {
+  // Do one giant malloc of all activations.
+  size_t num_activations = 0;
+  for (size_t i = 0; i < NUM_ACTIVATION_TENSORS; i++) {
+    num_activations += act_sizes[i];
+  }
+  float *activations_memory = (float*)mallocCheck(num_activations * sizeof(float));
+
+  // Demarcate bytes of each activation tensor.
+  float **ptrs[] = {
+    &acts->encoded, &acts->ln1, &acts->ln1_mean, &acts->ln1_rstd, &acts->qkv, &acts->atty, &acts->preatt, 
+    &acts->att, &acts->attproj, &acts->residual2, &acts->ln2, &acts->ln2_mean, &acts->ln2_rstd, &acts->fch, 
+    &acts->fch_gelu, &acts->fcproj, &acts->residual3, &acts->lnf, &acts->lnf_mean, &acts->lnf_rstd, 
+    &acts->logits, &acts->probs, &acts->losses
+  };
+  float *memory_ptr = activations_memory;
+  for (int i = 0; i < NUM_ACTIVATION_TENSORS; i++) {
+    *(ptrs[i]) = memory_ptr;
+    memory_ptr += act_sizes[i];
+  }
+  return activations_memory;
+}
 
 // A `typedef struct` is a class-like data structure of Python.
 typedef struct {
