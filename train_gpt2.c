@@ -86,6 +86,9 @@ void fill_in_parameter_sizes(size_t *param_sizes, GPT2Config config) {
   param_sizes[15] = C;                // lnfb
 }
 
+/**
+ * Allocates memory for parameter tensors and sets their pointers.
+ */
 float *malloc_and_point_parameters(ParameterTensors *params, size_t *param_sizes) {
   size_t num_parameters = 0;
   for (size_t i = 0; i < NUM_PARAMETER_TENSORS; i++) {
@@ -235,7 +238,45 @@ typedef struct {
   float mean_loss;  // average loss of the batch.
 } GPT2;
 
-void encoder_forward(float *out, int *inp) {}
+/**
+ * @brief Performs wte(inp) + wpe(inp).
+ *
+ * This function takes input token indices and combines their corresponding token embeddings
+ * (from the word token embedding matrix) and position embeddings (from the word position
+ * embedding matrix) to produce the output tensor.
+ *
+ * @param out Pointer to the output tensor of shape (B, T, C).
+ * @param inp Pointer to the input tensor of token indices of shape (B, T).
+ * @param wte Pointer to the word token embedding matrix of shape (V, C).
+ * @param wpe Pointer to the word position embedding matrix of shape (maxT, C).
+ * @param B Batch size.
+ * @param T Sequence length.
+ * @param C Embedding dimension.
+ */
+void encoder_forward(float *out, int *inp, float *wte, float *wpe, int B, int T, int C) {
+  /*
+  Tensor sizes:
+    out: (B, T, C)
+    inp: (B, T)
+    wte: (V, C)
+    wpe: (maxT, C)
+  */
+  for (int b = 0; b < B; b++) {
+    for (int t = 0; t < T; t++) {
+      // seek to the output position [b,t,:]
+      float *out_bt = out + b * T * C + t * C;
+      // fetch the input token value at [b, t]
+      int ix = inp[b * T + t];
+      // fetch relevant embedding start address of wpe and wte
+      float *wte_ix = wte + ix * C;
+      float *wpe_t = wpe + t * C;
+      // fetch C corresponding embedding floats from wte and wpe
+      for (int c = 0; c < C; c++) {
+        out_bt[c] = wte_ix[c] + wpe_t[c];
+      }
+    }
+  }
+}
 
 void gpt2_forward(GPT2 *model, int *inputs, int *targets, size_t B, size_t T) {
   // targets are optional.
@@ -247,6 +288,7 @@ void gpt2_forward(GPT2 *model, int *inputs, int *targets, size_t B, size_t T) {
 
   // convenience parameters.
   size_t V = model->config.vocab_size;
+  size_t C = model->config.channels;
 
   // validate inputs, all indices must be in the range [0, V)
   for (int i = 0; i < B * T; i++) {
@@ -288,7 +330,7 @@ void gpt2_forward(GPT2 *model, int *inputs, int *targets, size_t B, size_t T) {
   // forward pass
   ParameterTensors params = model->params;
   ActivationTensors acts = model->acts;
-  encoder_forward();
+  encoder_forward(acts.encoded, model->inputs, params.wte, params.wpe, B, T, C);
 }
 
 void gpt2_build_from_checkpoint(GPT2 *model, const char *checkpoint_path) {
