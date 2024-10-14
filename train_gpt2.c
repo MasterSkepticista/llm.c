@@ -238,12 +238,14 @@ typedef struct {
   float mean_loss;  // average loss of the batch.
 } GPT2;
 
+// --------------------------------Forward/Backward functions----------------------
 /**
  * @brief Performs wte(inp) + wpe(inp).
  *
- * This function takes input token indices and combines their corresponding token embeddings
- * (from the word token embedding matrix) and position embeddings (from the word position
- * embedding matrix) to produce the output tensor.
+ * This function takes input token indices and combines their corresponding
+ * token embeddings (from the word token embedding matrix) and position
+ * embeddings (from the word position embedding matrix) to produce the output
+ * tensor.
  *
  * @param out Pointer to the output tensor of shape (B, T, C).
  * @param inp Pointer to the input tensor of token indices of shape (B, T).
@@ -278,6 +280,18 @@ void encoder_forward(float *out, int *inp, float *wte, float *wpe, int B, int T,
   }
 }
 
+/**
+
+/**
+ * @brief Performs forward pass on the model, records activations, and loss if
+ * targets are provided.
+ *
+ * @param model Pointer to GPT2 model
+ * @param inputs Pointer to input token buffer of size (B, T)
+ * @param targets Pointer to targets token buffer of size (B, T), optional
+ * @param B Batch Size
+ * @param T Token sequence length
+ */
 void gpt2_forward(GPT2 *model, int *inputs, int *targets, size_t B, size_t T) {
   // targets are optional.
 
@@ -289,8 +303,10 @@ void gpt2_forward(GPT2 *model, int *inputs, int *targets, size_t B, size_t T) {
   // convenience parameters.
   size_t V = model->config.vocab_size;
   size_t C = model->config.channels;
+  size_t L = model->config.num_layers;
+  size_t NH = model->config.num_heads;
 
-  // validate inputs, all indices must be in the range [0, V)
+  // tokens must be in the range [0, V)
   for (int i = 0; i < B * T; i++) {
     assert(0 <= inputs[i] && inputs[i] < V);
     if (targets != NULL) {
@@ -331,6 +347,45 @@ void gpt2_forward(GPT2 *model, int *inputs, int *targets, size_t B, size_t T) {
   ParameterTensors params = model->params;
   ActivationTensors acts = model->acts;
   encoder_forward(acts.encoded, model->inputs, params.wte, params.wpe, B, T, C);
+
+  // forward on each layer
+  float *residual;
+  for (int l = 0; l < L; l++) {
+    residual = (l == 0) ? acts.encoded : acts.residual3 + (l - 1) * B * T * C;
+
+    // get the pointers of weights for this layer
+    float *l_ln1w = params.ln1w + l * C;
+    float *l_ln1b = params.ln1b + l * C;
+    float *l_qkvw = params.qkvw + l * 3 * C * C;
+    float *l_qkvb = params.qkvb + l * 3 * C;
+    float *l_attnprojw = params.attnprojw + l * C * C;
+    float *l_attnprojb = params.attnprojb + l * C;
+    float *l_ln2w = params.ln2w + l * C;
+    float *l_ln2b = params.ln2b + l * C;
+    float *l_fcw = params.fcw + l * 4 * C + C;
+    float *l_fcb = params.fcb + l * 4 * C;
+    float *l_fcprojw = params.fcprojw + l * C * 4 * C;
+    float *l_fcprojb = params.fcprojb + l * C;
+
+    // get the pointers of activations for this layer
+    float *l_ln1 = acts.ln1 + l * B * T * C;
+    float *l_ln1_mean = acts.ln1_mean + l * B * T;
+    float *l_ln1_rstd = acts.ln1_rstd + l * B * T;
+    float *l_qkv = acts.qkv + l * B * T * 3 * C;
+    float *l_atty = acts.atty + l * B * T * C;  // what?
+    float *l_preatt = acts.preatt + l * B * NH * T * T;
+    float *l_att = acts.att + l * B * NH * T * T;
+    float *l_attproj = acts.attproj + l * B * T * C;
+    float *l_ln2 = acts.ln2 + l * B * T * C;
+    float *l_ln2_mean = acts.ln2_mean + l * B * T;
+    float *l_ln2_rstd = acts.ln2_rstd + l * B * T;
+    float *l_fch = acts.fch + l * B * T * 4 * C;
+    float *l_fch_gelu = acts.fch_gelu + l * B * T * 4 * C;
+    float *l_fcproj = acts.fcproj + l * B * T * C;
+    float *l_residual3 = acts.residual3 + l * B * T * C;
+
+    // now do the forward pass
+  }
 }
 
 void gpt2_build_from_checkpoint(GPT2 *model, const char *checkpoint_path) {
