@@ -18,7 +18,13 @@ typedef struct {
   int channels;
 } GPT2Config;
 
-// the parameters of the model.
+/*
+Parameters of the model.
+Notation:
+V: Vocabulary size
+C: Channel/feature dim
+L: Layers
+*/
 #define NUM_PARAMETER_TENSORS 16
 typedef struct {
   float *wte; // (V, C)
@@ -35,8 +41,8 @@ typedef struct {
   float *fcb; // (L, 4*C)
   float *fcprojw; // (L, C, 4*C)
   float *fcprojb; // (L, C)
-  float *lnfw; // (L, C) CHECK?
-  float *lnfb; // (L, C) CHECK?
+  float *lnfw; // (C,)
+  float *lnfb; // (C,)
 } ParameterTensors;
 
 
@@ -101,9 +107,41 @@ float* malloc_and_point_parameters(ParameterTensors *params, size_t *param_sizes
   return params_memory;
 }
 
+/*
+Activations of the model.
+Notation:
+L: Number of layers
+B: Batch size
+NH: Number of attention heads
+T: Sequence length
+C: Channel dim (feature size)
+V: Vocabulary size
+*/
 #define NUM_ACTIVATION_TENSORS 23
 typedef struct {
-  // TODO:
+  float *encoded; // (B, T, C)
+  float *ln1; // (L, B, T, C)
+  float *ln1_mean; // (L, B, T)
+  float *ln1_rstd; // (L, B, T)
+  float *qkv; // (L, B, T, 3*C)
+  float *atty; // (L, B, T, C) what?
+  float *preatt; // (L, B, NH, T, T)
+  float *att; // (L, B, NH, T, T)
+  float *attproj; // (L, B, T, C)
+  float *residual2; // (L, B, T, C)
+  float *ln2; // (L, B, T, C)
+  float *ln2_mean; // (L, B, T)
+  float *ln2_rstd; // (L, B, T)
+  float *fch; // (L, B, T, 4*C)
+  float *fch_gelu; // (L, B, T, 4*C)
+  float *fcproj; // (L, B, T, C)
+  float *residual3; // (L, B, T, C)
+  float *lnf; // (B, T, C)
+  float *lnf_mean; // (B, T)
+  float *lnf_rstd; // (B, T)
+  float *logits; // (B, T, V)
+  float *probs; // (B, T, V)
+  float *losses; // (B, T)
 } ActivationTensors;
 
 // A `typedef struct` is a class-like data structure of Python.
@@ -124,8 +162,8 @@ typedef struct {
   float* v_memory;
   // the activations of the model, and their sizes.
   ActivationTensors acts;
-  size_t acts_sizes[NUM_ACTIVATION_TENSORS];
-  float* acts_memory;
+  size_t act_sizes[NUM_ACTIVATION_TENSORS];
+  float* act_memory;
   size_t num_activations;  // TODO: Why?
   // gradients of the activations.
   ActivationTensors grads_acts;
@@ -181,7 +219,7 @@ void gpt2_build_from_checkpoint(GPT2 *model, const char* checkpoint_path) {
   fcloseCheck(model_file);
 
   // other inits.
-  model->acts_memory = NULL;
+  model->act_memory = NULL;
   model->grads_memory = NULL;
   model->m_memory = NULL;
   model->v_memory = NULL;
