@@ -3,8 +3,8 @@ Defines the GPT-2 Tokenizer.
 Only supports decoding, i.e.: tokens (integers) -> strings.
 This is all we need for unconditional generation.
 */
-#include <stdint.h>
 #include <assert.h>
+#include <stdint.h>
 
 #include "utils.h"
 
@@ -38,14 +38,14 @@ void tokenizer_init(Tokenizer *tokenizer, const char *filename) {
     fprintf(stderr, "Tokenizer model file %s has bad version.\n", filename);
     exit(EXIT_FAILURE);
   }
-  
+
   // read in all the tokens
   unsigned char length;
-  tokenizer->token_table = (char**)mallocCheck(tokenizer->vocab_size * sizeof(char *));
+  tokenizer->token_table = (char **)mallocCheck(tokenizer->vocab_size * sizeof(char *));
   for (uint32_t i = 0; i < tokenizer->vocab_size; i++) {
     freadCheck(&length, sizeof(unsigned char), 1, file);
     assert(length > 0);
-    char *token_bytes = (char*)mallocCheck(length + 1);
+    char *token_bytes = (char *)mallocCheck(length + 1);
     freadCheck(token_bytes, sizeof(char), length, file);
     token_bytes[length] = '\0';
     tokenizer->token_table[i] = token_bytes;

@@ -5,9 +5,9 @@ Implements:
 #ifndef DATALOADER_H
 #define DATALOADER_H
 
+#include <assert.h>
 #include <glob.h>
 #include <stdint.h>
-#include <assert.h>
 
 #include "rand.h"
 #include "utils.h"
@@ -38,7 +38,7 @@ typedef struct {
   // randomness-related.
   int should_shuffle;
   mt19937_state shuffle_rng;
-  
+
   // state.
   size_t header_bytes;
   size_t file_size_bytes;
@@ -52,27 +52,27 @@ typedef struct {
 
 } DataLoader;
 
-
 /**
  * @brief Loads a shard of data into the DataLoader.
  *
- * This function loads a specific shard of data into the DataLoader, optionally shuffling the shard index if required.
- * It validates the header of the data file, checks the file size, and calculates the number of samples that can be 
+ * This function loads a specific shard of data into the DataLoader, optionally
+ * shuffling the shard index if required. It validates the header of the data
+ * file, checks the file size, and calculates the number of samples that can be
  * obtained from the shard.
  *
  * @param loader Pointer to the DataLoader structure.
  * @param shard_index Index of the shard to be loaded.
  * @return The number of tokens in the loaded shard.
  *
- * @note The function will exit the program if the header validation fails or if the file size is inconsistent with 
- * the expected number of tokens.
+ * @note The function will exit the program if the header validation fails or if
+ * the file size is inconsistent with the expected number of tokens.
  */
 int64_t dataloader_load_shard_(DataLoader *loader, int shard_index) {
   if (loader->should_shuffle) {
     shard_index = loader->shard_indices[shard_index];
   }
   const char *filename = loader->glob_result.gl_pathv[shard_index];
-  
+
   // Close any previously open shard file.
   if (loader->tokens_file != NULL) {
     fcloseCheck(loader->tokens_file);
@@ -86,14 +86,17 @@ int64_t dataloader_load_shard_(DataLoader *loader, int shard_index) {
     fprintf(stderr, "Bad magic value in the data file.\n");
     exit(EXIT_FAILURE);
   }
-  if (header[1] != 1) { printf("Bad version in the data file.\n"); exit(EXIT_FAILURE); }
+  if (header[1] != 1) {
+    printf("Bad version in the data file.\n");
+    exit(EXIT_FAILURE);
+  }
   int64_t ntok = header[2];
   assert(ntok > 0);
 
   // determine file size and make sure it is consistent with number of tokens.
-  fseekCheck(loader->tokens_file, 0, SEEK_END);  // seek to end of file.
+  fseekCheck(loader->tokens_file, 0, SEEK_END);          // seek to end of file.
   loader->file_size_bytes = ftell(loader->tokens_file);  // read the offset, i.e. file size.
-  fseekCheck(loader->tokens_file, 0, SEEK_SET);  // seek to start of the file.
+  fseekCheck(loader->tokens_file, 0, SEEK_SET);          // seek to start of the file.
   int64_t expected_file_size = HEADER_SIZE * sizeof(int) + ntok * sizeof(uint16_t);
   if (loader->file_size_bytes != expected_file_size) {
     printf("Error: file size is not as expected.\n");
@@ -114,11 +117,10 @@ void prepare_intra_shard_indices_(DataLoader *loader) {
   if (loader->intra_shard_indices != NULL) {
     free(loader->intra_shard_indices);
   }
-  loader->intra_shard_indices = (int*)mallocCheck(loader->shard_num_samples * sizeof(int));
-  init_identity_permutation(loader->intra_shard_indices, (int) loader->shard_num_samples);
-  random_permutation(loader->intra_shard_indices, (int) loader->shard_num_samples, &loader->shuffle_rng);
+  loader->intra_shard_indices = (int *)mallocCheck(loader->shard_num_samples * sizeof(int));
+  init_identity_permutation(loader->intra_shard_indices, (int)loader->shard_num_samples);
+  random_permutation(loader->intra_shard_indices, (int)loader->shard_num_samples, &loader->shuffle_rng);
 }
-
 
 /**
  * @brief Resets the DataLoader to its initial state.
@@ -134,10 +136,10 @@ void dataloader_reset(DataLoader *loader) {
   loader->current_sample_idx = 0;
 
   if (loader->should_shuffle) {
-    random_permutation(loader->shard_indices, (int) loader->glob_result.gl_pathc, &loader->shuffle_rng);
+    random_permutation(loader->shard_indices, (int)loader->glob_result.gl_pathc, &loader->shuffle_rng);
   }
 
-  dataloader_load_shard_(loader, (int) loader->current_shard_idx);
+  dataloader_load_shard_(loader, (int)loader->current_shard_idx);
 
   if (loader->should_shuffle) {
     prepare_intra_shard_indices_(loader);
@@ -149,7 +151,8 @@ void dataloader_reset(DataLoader *loader) {
  *
  * If the DataLoader is at the final shard, it resets to the first shard.
  * Otherwise, it advances to the next shard, resets the sample index, and
- * loads the new shard. If shuffling is enabled, it prepares intra-shard indices.
+ * loads the new shard. If shuffling is enabled, it prepares intra-shard
+ * indices.
  *
  * @param loader Pointer to the DataLoader instance.
  */
@@ -162,7 +165,7 @@ void dataloader_advance_(DataLoader *loader) {
   // advance the loader by loading the next shard and resetting its position.
   loader->current_shard_idx = (loader->current_shard_idx + 1) % loader->glob_result.gl_pathc;
   loader->current_sample_idx = 0;
-  dataloader_load_shard_(loader, (int) loader->current_shard_idx);
+  dataloader_load_shard_(loader, (int)loader->current_shard_idx);
 
   if (loader->should_shuffle) {
     prepare_intra_shard_indices_(loader);
@@ -187,29 +190,31 @@ void dataloader_advance_(DataLoader *loader) {
  */
 void dataloader_load_batch(DataLoader *loader) {
   assert(!loader->should_shuffle || (loader->should_shuffle && loader->intra_shard_indices != NULL));
-  assert(loader->current_sample_idx < loader->shard_num_samples); // check batches are available.
-  size_t idx = loader->should_shuffle ? loader->intra_shard_indices[loader->current_sample_idx] : loader->current_sample_idx;
+  assert(loader->current_sample_idx < loader->shard_num_samples);  // check batches are available.
+  size_t idx =
+      loader->should_shuffle ? loader->intra_shard_indices[loader->current_sample_idx] : loader->current_sample_idx;
   size_t global_batch_offset_bytes = idx * loader->total_batch_size_bytes;
-  // each process would have a local offset. for single-process, local offset is zero.
+  // each process would have a local offset. for single-process, local offset is
+  // zero.
   int64_t current_offset = loader->header_bytes + global_batch_offset_bytes + loader->local_batch_offset_bytes;
 
   size_t B = loader->B;
   size_t T = loader->T;
   // read BT+1 uint16_t tokens from the file to buffer.
   fseekCheck(loader->tokens_file, current_offset, SEEK_SET);
-  freadCheck(loader->buffer, sizeof(uint16_t), B*T+1, loader->tokens_file);
+  freadCheck(loader->buffer, sizeof(uint16_t), B * T + 1, loader->tokens_file);
   // move from buffer to inputs/targets.
-  for (int i = 0; i < B*T; i++) {
+  for (int i = 0; i < B * T; i++) {
     loader->inputs[i] = (int)loader->buffer[i];
-    loader->targets[i] = (int)loader->buffer[i+1];
+    loader->targets[i] = (int)loader->buffer[i + 1];
   }
 }
 
 /**
  * @brief Loads the next batch of data from the DataLoader.
  *
- * If the current sample index is at the end of the shard, it advances to the next shard.
- * Then, it loads the batch and increments the current sample index.
+ * If the current sample index is at the end of the shard, it advances to the
+ * next shard. Then, it loads the batch and increments the current sample index.
  *
  * @param loader Pointer to the DataLoader instance.
  */
@@ -225,8 +230,8 @@ void dataloader_next_batch(DataLoader *loader) {
 /**
  * @brief Initializes the DataLoader with the specified parameters.
  *
- * This function sets up the DataLoader by initializing its fields, 
- * performing file globbing to match the given filename pattern, 
+ * This function sets up the DataLoader by initializing its fields,
+ * performing file globbing to match the given filename pattern,
  * shuffling if required, and validating all shards to avoid runtime errors.
  *
  * @param loader Pointer to the DataLoader to initialize.
@@ -237,13 +242,8 @@ void dataloader_next_batch(DataLoader *loader) {
  * @param num_processes Total number of processes, for distributed mode.
  * @param should_shuffle Flag indicating whether to shuffle the shards.
  */
-void dataloader_init(DataLoader *loader, 
-                     const char *filename_pattern, 
-                     size_t B, 
-                     size_t T, 
-                     int process_rank, 
-                     int num_processes, 
-                     int should_shuffle) {
+void dataloader_init(DataLoader *loader, const char *filename_pattern, size_t B, size_t T, int process_rank,
+                     int num_processes, int should_shuffle) {
   loader->process_rank = process_rank;
   loader->num_processes = num_processes;
   loader->B = B;
@@ -269,9 +269,10 @@ void dataloader_init(DataLoader *loader,
     mt19937_state shuffle_rng;
     manual_seed(&shuffle_rng, 42 + process_rank);
     loader->shuffle_rng = shuffle_rng;
-    // Create an array of shard indices, and fill those values with range(len(shard_indices)).
-    loader->shard_indices = (int*)mallocCheck(loader->glob_result.gl_pathc * sizeof(int));
-    init_identity_permutation(loader->shard_indices, (int) loader->glob_result.gl_pathc);
+    // Create an array of shard indices, and fill those values with
+    // range(len(shard_indices)).
+    loader->shard_indices = (int *)mallocCheck(loader->glob_result.gl_pathc * sizeof(int));
+    init_identity_permutation(loader->shard_indices, (int)loader->glob_result.gl_pathc);
     loader->intra_shard_indices = NULL;
   }
 
@@ -279,16 +280,16 @@ void dataloader_init(DataLoader *loader,
   int64_t ntok_total = 0;
   for (int shard_index = 0; shard_index < loader->glob_result.gl_pathc; shard_index++) {
     int64_t shard_ntok = dataloader_load_shard_(loader, shard_index);
-    assert(shard_ntok >= (int64_t) (num_processes * B * T + 1));
+    assert(shard_ntok >= (int64_t)(num_processes * B * T + 1));
     ntok_total += shard_ntok;
   }
   printf("DataLoader: filename_pattern %s\n", filename_pattern);
   printf("DataLoader: Found %ld tokens across %zu shards\n", ntok_total, loader->glob_result.gl_pathc);
 
   // allocate necessary space.
-  loader->buffer = (uint16_t*)mallocCheck((B * T + 1) * sizeof(uint16_t));
-  loader->inputs = (int*)mallocCheck(B * T * sizeof(int));
-  loader->targets = (int*)mallocCheck(B * T * sizeof(int));
+  loader->buffer = (uint16_t *)mallocCheck((B * T + 1) * sizeof(uint16_t));
+  loader->inputs = (int *)mallocCheck(B * T * sizeof(int));
+  loader->targets = (int *)mallocCheck(B * T * sizeof(int));
   loader->num_tokens = ntok_total;
 
   // reset the loader

@@ -2,14 +2,13 @@
   This file contains utilities shared between different training scripts.
   We define a series of macros xxxCheck that call the corresponding C stdlib
   functions and check their return code, with additional debug information
-  wherever applicable.  
+  wherever applicable.
 */
 #ifndef UTILS_H
 #define UTILS_H
 
 #include <stdio.h>
 #include <stdlib.h>
-
 
 /**
  * @brief Opens a file and checks for errors.
@@ -33,7 +32,6 @@ extern inline FILE *fopen_check(const char *path, const char *mode, const char *
   return fp;
 }
 #define fopenCheck(path, mode) fopen_check(path, mode, __FILE__, __LINE__)
-
 
 /**
  * @brief Reads data from a file stream and checks for errors.
@@ -59,14 +57,12 @@ extern inline void fread_check(void *ptr, size_t size, size_t nmemb, FILE *strea
     } else if (ferror(stream)) {
       fprintf(stderr, "File read error at %s:%d\n", file, line);
     } else {
-      fprintf(stderr, "Partial read error at %s:%d, expected %zu elements, found %zu.", 
-        file, line, nmemb, result);
+      fprintf(stderr, "Partial read error at %s:%d, expected %zu elements, found %zu.", file, line, nmemb, result);
     }
     exit(EXIT_FAILURE);
   }
 }
 #define freadCheck(ptr, size, nmemb, stream) fread_check(ptr, size, nmemb, stream, __FILE__, __LINE__)
-
 
 /**
  * @brief Closes a file and checks for errors.
@@ -88,13 +84,12 @@ extern inline void fclose_check(FILE *fp, const char *file, int line) {
 }
 #define fcloseCheck(fp) fclose_check(fp, __FILE__, __LINE__)
 
-
 /**
  * @brief Allocates memory and checks for allocation failure.
  *
  * This function attempts to allocate a block of memory of the specified size.
  * If the allocation fails, it prints an error message to stderr with the size
- * of the requested memory, the file name, and the line number where the 
+ * of the requested memory, the file name, and the line number where the
  * allocation was attempted, and then exits the program with a failure status.
  *
  * @param size The size of the memory block to allocate, in bytes.
