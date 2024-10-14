@@ -152,27 +152,27 @@ typedef struct {
   // size_t is an unsigned integer dtype, preferred for object size counting.
   // this is also defining a 1D array of given size, to hold param size info.
   size_t param_sizes[NUM_PARAMETER_TENSORS];
-  float* params_memory;
+  float *params_memory;
   size_t num_parameters;
   // gradients of the weights.
   ParameterTensors grads;
-  float* grads_memory;
+  float *grads_memory;
   // buffers of the AdamW Optimizer.
-  float* m_memory;
-  float* v_memory;
+  float *m_memory;
+  float *v_memory;
   // the activations of the model, and their sizes.
   ActivationTensors acts;
   size_t act_sizes[NUM_ACTIVATION_TENSORS];
-  float* act_memory;
+  float *act_memory;
   size_t num_activations;  // TODO: Why?
   // gradients of the activations.
   ActivationTensors grads_acts;
-  float* grads_acts_memory;
+  float *grads_acts_memory;
   // other run state config
   int batch_size;  // the batch size (B) of current forward pass.
   int seq_len;  // the context length (T) for forward pass.
-  int* inputs;  // input tokens.
-  int* targets;  // target tokens.
+  int *inputs;  // input tokens.
+  int *targets;  // target tokens.
   float mean_loss;  // average loss of the batch.
 } GPT2;
 
