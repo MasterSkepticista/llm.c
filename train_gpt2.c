@@ -281,6 +281,56 @@ void encoder_forward(float *out, int *inp, float *wte, float *wpe, int B, int T,
 }
 
 /**
+ * @brief LayerNorm forward pass.
+ *
+ * @param out Pointer to output activation tensor of shape (B, T, C)
+ * @param inp Pointer to input activation tensor of shape (B, T, C)
+ * @param mean Pointer to store intermediate `mean`, of shape (B, T)
+ * @param rstd Pointer to store intermediate `rstd`, of shape (B, T)
+ * @param weight Pointer to weight parameter of shape (C,)
+ * @param bias Pointer to bias parameter of shape (C,)
+ * @param B Batch Size
+ * @param T Sequence length
+ * @param C Channel dimensions
+ */
+void layernorm_forward(float *out, float *inp, float *mean, float *rstd, float *weight, float *bias, int B, int T,
+                       int C) {
+  float eps = 1e-5f;
+  for (int b = 0; b < B; b++) {
+    for (int t = 0; t < T; t++) {
+      // seek to relevant row.
+      float *x = inp + b * T * C + t * C;
+
+      // calculate mean
+      float mu = 0.0f;
+      for (int c = 0; c < C; c++) {
+        mu += x[c];
+      }
+      mu /= C;
+
+      // calculate rstd (reciprocal std)
+      float var = 0.0f;
+      for (int c = 0; c < C; c++) {
+        float x_minus_mu = x[c] - mu;
+        var += x_minus_mu * x_minus_mu;
+      }
+      var /= C;
+      float rs = 1.0f / sqrtf(var + eps);
+
+      // seek to relevant output row.
+      float *out_bt = out + b * T * C + t * C;
+      for (int c = 0; c < C; c++) {
+        float n = (x[c] - mu) * rs;
+        out_bt[c] = n * weight[c] + bias[c];
+      }
+
+      // cache mean and rstd for backward.
+      mean[b * T + t] = mu;
+      rstd[b * T + t] = rs;
+    }
+  }
+}
+
 
 /**
  * @brief Performs forward pass on the model, records activations, and loss if
@@ -385,6 +435,7 @@ void gpt2_forward(GPT2 *model, int *inputs, int *targets, size_t B, size_t T) {
     float *l_residual3 = acts.residual3 + l * B * T * C;
 
     // now do the forward pass
+    layernorm_forward(l_ln1, residual, l_ln1_mean, l_ln1_rstd, l_ln1w, l_ln1b, B, T, C);
   }
 }
 
