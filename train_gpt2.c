@@ -331,6 +331,80 @@ void layernorm_forward(float *out, float *inp, float *mean, float *rstd, float *
   }
 }
 
+/**
+ * Naive loop matmul for unfriendly input shapes. Performs:
+ * (B, T, C) @ (C, OC) + (OC,) -> (B, T, OC)
+ * 
+ * @param out Pointer to tensor of shape (B, T, OC) to store result.
+ * @param inp Pointer to tensor of shape (B, T, C).
+ * @param weight Pointer to tensor of shape (OC, C).
+ * @param bias Optional, pointer to tensor of shape (OC,).
+ * @param B Batch Size.
+ * @param T Sequence length.
+ * @param C Channel dims of input.
+ * @param OC Channel dims after matmul with weight matrix.
+ */
+void matmul_forward_naive(float *out, const float *inp, const float *weight, const float *bias, int B, int T, int C,
+                          int OC) {
+  #pragma omp parallel for collapse(2)
+  for (int b = 0; b < B; b++) {
+    for (int t = 0; t < T; t++) {
+      int m = b * T + t;
+      for (int o = 0; o < OC; o++) {
+        float sum = (bias != NULL) ? bias[o] : 0.0f;
+        for (int c = 0; c < C; c++) {
+          sum += inp[m * C + c] * weight[o * C + c];
+        }
+        out[m * OC + o] = sum;
+      }
+    }
+  }
+}
+
+/**
+ * Performs a MatMul of shapes:
+ * (B, T, C) @ (C, OC) + (OC,) -> (B, T, OC)
+ * 
+ * @param out Pointer to tensor of shape (B, T, OC) to store result.
+ * @param inp Pointer to tensor of shape (B, T, C).
+ * @param weight Pointer to tensor of shape (OC, C).
+ * @param bias Optional, pointer to tensor of shape (OC,).
+ * @param B Batch Size.
+ * @param T Sequence length.
+ * @param C Channel dims of input.
+ * @param OC Channel dims after matmul with weight matrix.
+ */
+void matmul_forward(float *out, const float *inp, const float *weight, const float *bias, int B, int T, int C, int OC) {
+  const int TILE_SIZE = 8;
+  if (B * T % TILE_SIZE != 0) {
+    matmul_forward_naive(out, inp, weight, bias, B, T, C, OC);
+    return;
+  }
+
+  #pragma omp parallel for
+  for (int obt = 0; obt < B * T; obt += TILE_SIZE) {
+    for (int o = 0; o < OC; o++) {
+      // initialize the tile.
+      float result[TILE_SIZE];
+      for (int t = 0; t < TILE_SIZE; t++) {
+        result[t] = (bias != NULL) ? bias[t] : 0.0f;
+      }
+
+      // compute tiled inner dot product
+      for (int c = 0; c < C; c++) {
+        float w = weight[o * C + c];
+        for (int t = 0; t < TILE_SIZE; t++) {
+          result[t] += inp[(obt + t) * C + c] * w;
+        }
+      }
+
+      // store
+      for (int t = 0; t < TILE_SIZE; t++) {
+        out[(obt + t) * OC + o] = result[t];
+      }
+    }
+  }
+}
 
 /**
  * @brief Performs forward pass on the model, records activations, and loss if
@@ -436,6 +510,7 @@ void gpt2_forward(GPT2 *model, int *inputs, int *targets, size_t B, size_t T) {
 
     // now do the forward pass
     layernorm_forward(l_ln1, residual, l_ln1_mean, l_ln1_rstd, l_ln1w, l_ln1b, B, T, C);
+    matmul_forward(l_qkv, l_ln1, l_qkvw, l_qkvb, B, T, C, 3*C);
   }
 }
 
