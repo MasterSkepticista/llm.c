@@ -4,6 +4,9 @@ This file trains the GPT-2 model on CPU.
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#ifdef OMP
+#include <omp.h>
+#endif
 
 #include "llmc/dataloader.h"
 #include "llmc/tokenizer.h"
@@ -334,7 +337,7 @@ void layernorm_forward(float *out, float *inp, float *mean, float *rstd, float *
 /**
  * Naive loop matmul for unfriendly input shapes. Performs:
  * (B, T, C) @ (C, OC) + (OC,) -> (B, T, OC)
- * 
+ *
  * @param out Pointer to tensor of shape (B, T, OC) to store result.
  * @param inp Pointer to tensor of shape (B, T, C).
  * @param weight Pointer to tensor of shape (OC, C).
@@ -346,7 +349,7 @@ void layernorm_forward(float *out, float *inp, float *mean, float *rstd, float *
  */
 void matmul_forward_naive(float *out, const float *inp, const float *weight, const float *bias, int B, int T, int C,
                           int OC) {
-  #pragma omp parallel for collapse(2)
+#pragma omp parallel for collapse(2)
   for (int b = 0; b < B; b++) {
     for (int t = 0; t < T; t++) {
       int m = b * T + t;
@@ -364,7 +367,7 @@ void matmul_forward_naive(float *out, const float *inp, const float *weight, con
 /**
  * Performs a MatMul of shapes:
  * (B, T, C) @ (C, OC) + (OC,) -> (B, T, OC)
- * 
+ *
  * @param out Pointer to tensor of shape (B, T, OC) to store result.
  * @param inp Pointer to tensor of shape (B, T, C).
  * @param weight Pointer to tensor of shape (OC, C).
@@ -381,7 +384,7 @@ void matmul_forward(float *out, const float *inp, const float *weight, const flo
     return;
   }
 
-  #pragma omp parallel for
+#pragma omp parallel for
   for (int obt = 0; obt < B * T; obt += TILE_SIZE) {
     for (int o = 0; o < OC; o++) {
       // initialize the tile.
@@ -401,6 +404,74 @@ void matmul_forward(float *out, const float *inp, const float *weight, const flo
       // store
       for (int t = 0; t < TILE_SIZE; t++) {
         out[(obt + t) * OC + o] = result[t];
+      }
+    }
+  }
+}
+
+/**
+ * @brief Computes dot-product attention.
+ * out = softmax(preatt)
+ *
+ * @param out Result tensor of shape (B, T, C)
+ * @param preatt Result tensor of shape (B, NH, T, T), output of QK.T
+ * @param att Result tensor with softmax applied on preatt.
+ * @param inp Input tensor of shape (B, T, 3C) comprising QKV.
+ *
+ * Rest are trivial parameters.
+ */
+void attention_forward(float *out, float *preatt, float *att, float *inp, int B, int T, int C, int NH) {
+  int C3 = C * 3;
+  int head_dim = C / NH;
+  float scale = 1.0 / sqrtf(head_dim);
+
+#pragma omp parallel for collapse(3)
+  for (int b = 0; b < B; b++) {
+    for (int t = 0; t < T; t++) {
+      for (int h = 0; h < NH; h++) {
+        float *query = inp + (b * T * C3) + (t * C3) + h * head_dim;
+        float *preatt_bth = preatt + (b * NH * T * T) + (h * T * T) + t * T;
+        float *att_bth = att + (b * NH * T * T) + (h * T * T) + t * T;
+
+        // preatt = (Q @ K.T) / sqrt(d_k)
+        float maxval = -1e5f;
+        for (int t2 = 0; t2 <= t; t2++) {
+          // key = inp[b, 0:t, c:2c]
+          float *key = inp + (b * T * C3) + (t2 * C3) + (C + h * head_dim);
+          float val = 0.0f;
+          for (int i = 0; i < head_dim; i++) {
+            val += query[i] * key[i];
+          }
+          val *= scale;
+          maxval = (val > maxval) ? val : maxval;
+          preatt_bth[t2] = val;
+        }
+
+        // att = softmax(preatt)
+        float expsum = 0.0f;
+        for (int t2 = 0; t2 <= t; t2++) {
+          float expv = expf(preatt[t2] - maxval);
+          expsum += expv;
+          att_bth[t2] = expv;
+        }
+        float expsum_inv = expsum == 0.0f ? 0.0f : 1.0f / expsum;
+
+        for (int t2 = 0; t2 < T; t2++) {
+          // causal attention mask
+          att_bth[t2] = (t2 <= t) ? att_bth[t2] * expsum_inv : 0.0f;
+        }
+
+        // att @ V
+        float *out_bth = out + b * T * C + t * C + h * head_dim;
+        for (int i = 0; i < head_dim; i++) {
+          out_bth[i] = 0.0f;
+        }
+        for (int t2 = 0; t2 <= t; t2++) {
+          float *value = inp + b * T * C3 + t2 * C3 + (2 * C + h * head_dim);
+          for (int i = 0; i < head_dim; i++) {
+            out_bth[i] += att_bth[t2] * value[t2];
+          }
+        }
       }
     }
   }
@@ -510,7 +581,8 @@ void gpt2_forward(GPT2 *model, int *inputs, int *targets, size_t B, size_t T) {
 
     // now do the forward pass
     layernorm_forward(l_ln1, residual, l_ln1_mean, l_ln1_rstd, l_ln1w, l_ln1b, B, T, C);
-    matmul_forward(l_qkv, l_ln1, l_qkvw, l_qkvb, B, T, C, 3*C);
+    matmul_forward(l_qkv, l_ln1, l_qkvw, l_qkvb, B, T, C, 3 * C);
+    attention_forward(l_atty, l_preatt, l_att, l_qkv, B, T, C, NH);
   }
 }
 
