@@ -478,6 +478,15 @@ void attention_forward(float *out, float *preatt, float *att, float *inp, int B,
 }
 
 /**
+ * Residual forward, simple add of two matrices/vectors.
+ */
+void residual_forward(float *out, float *inp1, float *inp2, int N) {
+  for (int i = 0; i < N; i++) {
+    out[i] = inp1[i] + inp2[i];
+  }
+}
+
+/**
  * @brief Performs forward pass on the model, records activations, and loss if
  * targets are provided.
  *
@@ -571,6 +580,7 @@ void gpt2_forward(GPT2 *model, int *inputs, int *targets, size_t B, size_t T) {
     float *l_preatt = acts.preatt + l * B * NH * T * T;
     float *l_att = acts.att + l * B * NH * T * T;
     float *l_attproj = acts.attproj + l * B * T * C;
+    float *l_residual2 = acts.residual2 + l * B * T * C;
     float *l_ln2 = acts.ln2 + l * B * T * C;
     float *l_ln2_mean = acts.ln2_mean + l * B * T;
     float *l_ln2_rstd = acts.ln2_rstd + l * B * T;
@@ -584,6 +594,7 @@ void gpt2_forward(GPT2 *model, int *inputs, int *targets, size_t B, size_t T) {
     matmul_forward(l_qkv, l_ln1, l_qkvw, l_qkvb, B, T, C, 3 * C);
     attention_forward(l_atty, l_preatt, l_att, l_qkv, B, T, C, NH);
     matmul_forward(l_attproj, l_atty, l_attnprojw, l_attnprojb, B, T, C, C);
+    residual_forward(l_residual2, residual, l_attproj, B * T * C);
   }
 }
 
