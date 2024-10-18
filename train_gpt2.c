@@ -129,7 +129,7 @@ typedef struct {
   float *ln1_mean;   // (L, B, T)
   float *ln1_rstd;   // (L, B, T)
   float *qkv;        // (L, B, T, 3*C)
-  float *atty;       // (L, B, T, C) what?
+  float *atty;       // (L, B, T, C)
   float *preatt;     // (L, B, NH, T, T)
   float *att;        // (L, B, NH, T, T)
   float *attproj;    // (L, B, T, C)
@@ -567,7 +567,7 @@ void gpt2_forward(GPT2 *model, int *inputs, int *targets, size_t B, size_t T) {
     float *l_ln1_mean = acts.ln1_mean + l * B * T;
     float *l_ln1_rstd = acts.ln1_rstd + l * B * T;
     float *l_qkv = acts.qkv + l * B * T * 3 * C;
-    float *l_atty = acts.atty + l * B * T * C;  // what?
+    float *l_atty = acts.atty + l * B * T * C;
     float *l_preatt = acts.preatt + l * B * NH * T * T;
     float *l_att = acts.att + l * B * NH * T * T;
     float *l_attproj = acts.attproj + l * B * T * C;
@@ -583,6 +583,7 @@ void gpt2_forward(GPT2 *model, int *inputs, int *targets, size_t B, size_t T) {
     layernorm_forward(l_ln1, residual, l_ln1_mean, l_ln1_rstd, l_ln1w, l_ln1b, B, T, C);
     matmul_forward(l_qkv, l_ln1, l_qkvw, l_qkvb, B, T, C, 3 * C);
     attention_forward(l_atty, l_preatt, l_att, l_qkv, B, T, C, NH);
+    matmul_forward(l_attproj, l_atty, l_attnprojw, l_attnprojb, B, T, C, C);
   }
 }
 
@@ -655,7 +656,7 @@ int main() {
   // build the dataloaders.
   const char *train_tokens = "dev/data/tinyshakespeare/tiny_shakespeare_train.bin";
   const char *val_tokens = "dev/data/tinyshakespeare/tiny_shakespeare_val.bin";
-  int B = 4;   // batch size 4
+  int B = 4;    // batch size 4
   int T = 64;  // sequence length 64
   DataLoader train_loader, val_loader;
   dataloader_init(&train_loader, train_tokens, B, T, 0, 1, 1);
