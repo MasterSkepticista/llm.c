@@ -1,10 +1,10 @@
 /*
 This file trains the GPT-2 model on CPU.
 */
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
-#include <math.h>
 #ifdef OMP
 #include <omp.h>
 #endif
@@ -548,6 +548,31 @@ void crossentropy_forward(float *losses, float *probs, int *targets, int B, int 
 }
 
 /**
+ * CE Backward pass from losses to logits.
+ *
+ * @param dlogits Output tensor of shape (B, T, Vp).
+ * @param dlosses Input tensor of shape (B, T).
+ * @param probs Input probabilities of shape (B, T, Vp).
+ * @param targets Input tensor of shape (B, T).
+ */
+void crossentropy_softmax_backward(float *dlogits, float *dlosses, float *probs, int *targets, int B, int T, int V,
+                                   int Vp) {
+  for (int b = 0; b < B; b++) {
+    for (int t = 0; t < T; t++) {
+      float *dlogits_bt = dlogits + b * T * Vp + t * Vp;
+      float *probs_bt = probs + b * T * Vp + t * Vp;
+      float dloss = dlosses[b * T + t];
+      int tgt = targets[b * T + t];
+      // V->Vp will remain zero as they are padding.
+      for (int i = 0; i < V; i++) {
+        float indicator = (i == tgt) ? 1.0f : 0.0f;
+        dlogits_bt[i] += (probs_bt[i] - indicator) * dloss;
+      }
+    }
+  }
+}
+
+/**
  * @brief Performs forward pass on the model, records activations, and loss if
  * targets are provided.
  *
@@ -682,6 +707,50 @@ void gpt2_forward(GPT2 *model, int *inputs, int *targets, size_t B, size_t T) {
   }
 }
 
+/**
+ * Zeroes parameter gradients and activation gradients.
+ */
+void gpt2_zero_grad(GPT2 *model) {
+  if (model->grads_memory != NULL) {
+    memset(model->grads_memory, 0, model->num_parameters * sizeof(float));
+  }
+  if (model->grads_acts_memory != NULL) {
+    memset(model->grads_acts_memory, 0, model->num_activations * sizeof(float));
+  }
+}
+
+void gpt2_backward(GPT2 *model) {
+  assert(model->mean_loss != -1.0f);
+
+  // lazily allocate memory for (parameter + activation) gradients.
+  if (model->grads_memory == NULL) {
+    model->grads_memory = malloc_and_point_parameters(&model->grads, model->param_sizes);
+    model->grads_acts_memory = malloc_and_point_activations(&model->grads_acts, model->act_sizes);
+    gpt2_zero_grad(model);
+  }
+
+  // convenience parameters
+  size_t B = model->batch_size;
+  size_t T = model->seq_len;
+  size_t V = model->config.vocab_size;
+  size_t Vp = model->config.padded_vocab_size;
+  size_t L = model->config.num_layers;
+  size_t NH = model->config.num_heads;
+  size_t C = model->config.channels;
+
+  ParameterTensors params = model->params;
+  ParameterTensors grads = model->grads;
+  ActivationTensors acts = model->acts;
+  ActivationTensors grads_acts = model->grads_acts;
+
+  // backward pass
+  float dloss_mean = 1.0f / (B * T);
+  for (int i = 0; i < B * T; i++) {
+    grads_acts.losses[i] = dloss_mean;
+  }
+  crossentropy_softmax_backward(grads_acts.logits, grads_acts.losses, acts.probs, model->targets, B, T, V, Vp);
+}
+
 void gpt2_build_from_checkpoint(GPT2 *model, const char *checkpoint_path) {
   // read model data from a checkpoint file.
   FILE *model_file = fopenCheck(checkpoint_path, "rb");
@@ -801,6 +870,14 @@ int main() {
     }
 
     // do a train step.
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    dataloader_next_batch(&train_loader);
+    gpt2_forward(&model, train_loader.inputs, train_loader.targets, B, T);
+    gpt2_zero_grad(&model);
+    gpt2_backward(&model);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    double time_elapsed_s = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
+    printf("Step %d: train loss %f (took %f ms)\n", step, model.mean_loss, time_elapsed_s * 1e3f);
   }
 
   // free
