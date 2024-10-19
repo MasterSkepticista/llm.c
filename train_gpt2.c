@@ -4,6 +4,7 @@ This file trains the GPT-2 model on CPU.
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <math.h>
 #ifdef OMP
 #include <omp.h>
 #endif
@@ -259,13 +260,6 @@ typedef struct {
  * @param C Embedding dimension.
  */
 void encoder_forward(float *out, int *inp, float *wte, float *wpe, int B, int T, int C) {
-  /*
-  Tensor sizes:
-    out: (B, T, C)
-    inp: (B, T)
-    wte: (V, C)
-    wpe: (maxT, C)
-  */
   for (int b = 0; b < B; b++) {
     for (int t = 0; t < T; t++) {
       // seek to the output position [b,t,:]
@@ -423,7 +417,7 @@ void matmul_forward(float *out, const float *inp, const float *weight, const flo
 void attention_forward(float *out, float *preatt, float *att, float *inp, int B, int T, int C, int NH) {
   int C3 = C * 3;
   int head_dim = C / NH;
-  float scale = 1.0 / sqrtf(head_dim);
+  float scale = 1.0f / sqrtf(head_dim);
 
 #pragma omp parallel for collapse(3)
   for (int b = 0; b < B; b++) {
@@ -495,7 +489,7 @@ void gelu_forward(float *out, float *inp, int N) {
   for (int i = 0; i < N; i++) {
     float x = inp[i];
     float cube = 0.044715f * x * x * x;
-    out[i] = 0.5f * x * (1 + tanhf(GELU_SCALING_FACTOR * (x + cube)));
+    out[i] = 0.5f * x * (1.0f + tanhf(GELU_SCALING_FACTOR * (x + cube)));
   }
 }
 
@@ -604,7 +598,7 @@ void gpt2_forward(GPT2 *model, int *inputs, int *targets, size_t B, size_t T) {
   } else {
     // validate B, T are consistent with memory allocated.
     if (B != model->batch_size || T != model->seq_len) {
-      printf("Model: B=%d T=%d, Expected: B=%d T=%d\n", model->batch_size, model->seq_len, B, T);
+      printf("Model: B=%d T=%d, Expected: B=%d T=%d\n", model->batch_size, model->seq_len, (int)B, (int)T);
       exit(EXIT_FAILURE);
     }
   }

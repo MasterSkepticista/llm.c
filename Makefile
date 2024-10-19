@@ -1,4 +1,5 @@
-CC = clang
+# somehow `cc` faster than `clang` in math mode
+CC ?= clang
 CFLAGS = -Ofast -Wno-unused-result -Wno-ignored-pragmas -Wno-unknown-attributes
 LDLIBS = -lm
 CFLAGS_COND = -march=native
@@ -16,4 +17,4 @@ endif
 $(info ---------------------------------------------)
 
 train_gpt2: train_gpt2.c
-	$(CC) $(CFLAGS) $(LDLIBS) $(CFLAGS_COND) $^ -o $@
+	$(CC) $(CFLAGS) $(CFLAGS_COND) $^ $(LDLIBS) -o $@
