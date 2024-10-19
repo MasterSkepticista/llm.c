@@ -486,6 +486,73 @@ void residual_forward(float *out, float *inp1, float *inp2, int N) {
   }
 }
 
+#define GELU_SCALING_FACTOR sqrtf(2.0f / M_PI)
+
+/**
+ * Applies elementwise approximate GELU nonlinearity.
+ */
+void gelu_forward(float *out, float *inp, int N) {
+  for (int i = 0; i < N; i++) {
+    float x = inp[i];
+    float cube = 0.044715f * x * x * x;
+    out[i] = 0.5f * x * (1 + tanhf(GELU_SCALING_FACTOR * (x + cube)));
+  }
+}
+
+/**
+ * Applies softmax on the outer dimension of `logits`.
+ *
+ * @param probs Pointer to tensor of shape (B, T, Vp).
+ * @param logits Pointer to logits of shape (B, T, Vp).
+ */
+void softmax_forward(float *probs, float *logits, int B, int T, int V, int Vp) {
+#pragma omp parallel for collapse(2)
+  for (int b = 0; b < B; b++) {
+    for (int t = 0; t < T; t++) {
+      float *logits_bt = logits + b * T * Vp + t * Vp;
+      float *probs_bt = probs + b * T * Vp + t * Vp;
+
+      // compute maxval for numerical stability.
+      float maxval = -10000.0f;
+      for (int i = 0; i < V; i++) {
+        maxval = (logits_bt[i] > maxval) ? logits_bt[i] : maxval;
+      }
+
+      // compute probability, ignore padded dimensions (Vp - V)
+      float sum = 0.0f;
+      for (int i = 0; i < V; i++) {
+        probs_bt[i] = expf(logits_bt[i] - maxval);
+        sum += probs_bt[i];
+      }
+      for (int i = 0; i < V; i++) {
+        probs_bt[i] /= sum;
+      }
+
+      // for safety.
+      for (int i = V; i < Vp; i++) {
+        probs_bt[i] = 0.0f;
+      }
+    }
+  }
+}
+
+/**
+ * Compute CE loss.
+ *
+ * @param losses Output tensor pointer of shape (B, T).
+ * @param probs Input tensor pointer of shape (B, T, V).
+ * @param targets Input tensor pointer of shape (B, T).
+ */
+void crossentropy_forward(float *losses, float *probs, int *targets, int B, int T, int Vp) {
+  for (int b = 0; b < B; b++) {
+    for (int t = 0; t < T; t++) {
+      float *probs_bt = probs + b * T * Vp + t * Vp;
+      float p_x = probs_bt[targets[b * T + t]];
+      losses[b * T + t] = -logf(p_x);
+    }
+  }
+}
+
 /**
  * @brief Performs forward pass on the model, records activations, and loss if
  * targets are provided.
@@ -506,6 +573,7 @@ void gpt2_forward(GPT2 *model, int *inputs, int *targets, size_t B, size_t T) {
 
   // convenience parameters.
   size_t V = model->config.vocab_size;
+  size_t Vp = model->config.padded_vocab_size;
   size_t C = model->config.channels;
   size_t L = model->config.num_layers;
   size_t NH = model->config.num_heads;
@@ -595,6 +663,28 @@ void gpt2_forward(GPT2 *model, int *inputs, int *targets, size_t B, size_t T) {
     attention_forward(l_atty, l_preatt, l_att, l_qkv, B, T, C, NH);
     matmul_forward(l_attproj, l_atty, l_attnprojw, l_attnprojb, B, T, C, C);
     residual_forward(l_residual2, residual, l_attproj, B * T * C);
+    layernorm_forward(l_ln2, l_residual2, l_ln2_mean, l_ln2_rstd, l_ln2w, l_ln2b, B, T, C);
+    matmul_forward(l_fch, l_ln2, l_fcw, l_fcb, B, T, C, 4 * C);
+    gelu_forward(l_fch_gelu, l_fch, B * T * 4 * C);
+    matmul_forward(l_fcproj, l_fch_gelu, l_fcprojw, l_fcprojb, B, T, C, C);
+    residual_forward(l_residual3, l_fcproj, l_residual2, B * T * C);
+  }
+  residual = acts.residual3 + (L - 1) * B * T * C;
+  layernorm_forward(acts.lnf, residual, acts.lnf_mean, acts.lnf_rstd, params.lnfw, params.lnfb, B, T, C);
+  matmul_forward(acts.logits, acts.lnf, params.wte, NULL, B, T, C, Vp);
+  softmax_forward(acts.probs, acts.logits, B, T, V, Vp);
+
+  // compute loss if targets available.
+  if (targets != NULL) {
+    crossentropy_forward(model->acts.losses, model->acts.probs, targets, B, T, Vp);
+    float mean_loss = 0.0f;
+    for (int i = 0; i < B * T; i++) {
+      mean_loss += model->acts.losses[i];
+    }
+    mean_loss /= B * T;
+    model->mean_loss = mean_loss;
+  } else {
+    model->mean_loss = -1.0f;
   }
 }
 
@@ -667,7 +757,7 @@ int main() {
   // build the dataloaders.
   const char *train_tokens = "dev/data/tinyshakespeare/tiny_shakespeare_train.bin";
   const char *val_tokens = "dev/data/tinyshakespeare/tiny_shakespeare_val.bin";
-  int B = 4;    // batch size 4
+  int B = 4;   // batch size 4
   int T = 64;  // sequence length 64
   DataLoader train_loader, val_loader;
   dataloader_init(&train_loader, train_tokens, B, T, 0, 1, 1);
