@@ -329,6 +329,55 @@ void layernorm_forward(float *out, float *inp, float *mean, float *rstd, float *
 }
 
 /**
+ * @brief Computes the backward pass for layer normalization.
+ * This was particularly tricky. Good exercise to derive the backward equations
+ * yourself first!
+ *
+ * @param dinp Pointer to store gradient of the input, size (B, T, C).
+ * @param dweight Pointer to store the gradient of the weight, size (C,).
+ * @param dbias Pointer to store the gradient of the bias, size (C,).
+ * @param dout Pointer to the gradient of the output, size (B, T, C).
+ * @param inp Pointer to the input data to the layernorm, size (B, T, C).
+ * @param weight Pointer to the weight data, size (C,).
+ * @param mean Pointer to the mean of the input data, size (B, T).
+ * @param rstd Pointer to the reciprocal standard deviation of the input data, size (B, T).
+ */
+void layernorm_backward(float *dinp, float *dweight, float *dbias, float *dout, float *inp, float *weight, float *mean,
+                        float *rstd, int B, int T, int C) {
+  // #pragma omp parallel for collapse(2)
+  for (int b = 0; b < B; b++) {
+    for (int t = 0; t < T; t++) {
+      float *dout_bt = dout + b * T * C + t * C;
+      float *inp_bt = inp + b * T * C + t * C;
+      float *dinp_bt = dinp + b * T * C + t * C;
+      float mean_bt = mean[b * T + t];
+      float rstd_bt = rstd[b * T + t];
+
+      // reduce ops (required in the loop below).
+      float dnorm_mean = 0.0f;
+      float dnorm_norm_mean = 0.0f;
+      for (int i = 0; i < C; i++) {
+        float norm_bti = (inp_bt[i] - mean_bt) * rstd_bt;
+        float dnorm_i = weight[i] * dout_bt[i];
+        dnorm_mean += dnorm_i;
+        dnorm_norm_mean += dnorm_i * norm_bti;
+      }
+      dnorm_mean /= C;
+      dnorm_norm_mean /= C;
+
+      // accumulate input, weight and bias gradients
+      for (int i = 0; i < C; i++) {
+        float norm_bti = (inp_bt[i] - mean_bt) * rstd_bt;
+        float dnorm_i = weight[i] * dout_bt[i];
+        dbias[i] += dout_bt[i];
+        dweight[i] += dout_bt[i] * norm_bti;
+        dinp_bt[i] += rstd_bt * (dnorm_i - dnorm_mean - (dnorm_norm_mean * norm_bti));
+      }
+    }
+  }
+}
+
+/**
  * Naive loop matmul for unfriendly input shapes. Performs:
  * (B, T, C) @ (C, OC) + (OC,) -> (B, T, OC)
  *
@@ -398,6 +447,57 @@ void matmul_forward(float *out, const float *inp, const float *weight, const flo
       // store
       for (int t = 0; t < TILE_SIZE; t++) {
         out[(obt + t) * OC + o] = result[t];
+      }
+    }
+  }
+}
+
+/**
+ * Matmul backward. Approximately, this does
+ *
+ * ```
+ * dW = inp * dout
+ * db = dout
+ * din = w * dout
+ * ```
+ * @param din Resulting input activation gradient, shape (B, T, C).
+ * @param dweight Resulting weight matrix gradient, shape (OC, C).
+ * @param dbias Resulting bias vector gradient, shape (OC,).
+ * @param dout Inward activation gradient, shape (B, T, OC).
+ * @param inp Inputs in the matmul_forward, shape (B, T, C).
+ * @param weight Weight matrix, shape (OC, C).
+ *
+ */
+void matmul_backward(float *din, float *dweight, float *dbias, const float *dout, const float *inp, const float *weight,
+                     int B, int T, int C, int OC) {
+#pragma omp parallel for collapse(2)
+  // backward into inputs.
+  for (int b = 0; b < B; b++) {
+    for (int t = 0; t < T; t++) {
+      const float *dout_bt = dout + b * T * OC + t * OC;
+      float *din_bt = din + b * T * C + t * C;
+      for (int o = 0; o < OC; o++) {
+        const float *wrow = weight + o * C;
+        for (int i = 0; i < C; i++) {
+          din_bt[i] += wrow[i] * dout_bt[o];
+        }
+      }
+    }
+  }
+
+#pragma omp parallel for
+  // backward into weights
+  for (int o = 0; o < OC; o++) {
+    for (int b = 0; b < B; b++) {
+      for (int t = 0; t < T; t++) {
+        const float *dout_bt = dout + b * T * OC + t * OC;
+        const float *inp_bt = inp + b * T * C + t * C;
+        if (dbias != NULL) {
+          dbias[o] += dout_bt[o];
+        }
+        for (int i = 0; i < C; i++) {
+          dweight[o * C + i] += inp_bt[i] * dout_bt[o];
+        }
       }
     }
   }
@@ -749,6 +849,11 @@ void gpt2_backward(GPT2 *model) {
     grads_acts.losses[i] = dloss_mean;
   }
   crossentropy_softmax_backward(grads_acts.logits, grads_acts.losses, acts.probs, model->targets, B, T, V, Vp);
+  matmul_backward(grads_acts.lnf, grads.wte, NULL, grads_acts.logits, acts.lnf, params.wte, B, T, C, Vp);
+  float *residual = acts.residual3 + (L - 1) * B * T * C;
+  float *dresidual = grads_acts.residual3 + (L - 1) * B * T * C;
+  layernorm_backward(dresidual, grads.lnfw, grads.lnfb, grads_acts.lnf, residual, params.lnfw, acts.lnf_mean,
+                     acts.lnf_rstd, B, T, C);
 }
 
 void gpt2_build_from_checkpoint(GPT2 *model, const char *checkpoint_path) {
