@@ -580,6 +580,19 @@ void residual_forward(float *out, float *inp1, float *inp2, int N) {
   }
 }
 
+/**
+ * Residual backward, copy output-side gradient to inputs.
+ */
+void residual_backward(float *dout, float *dinp1, float *dinp2, int N) {
+#pragma omp parallel for
+  for (int i = 0; i < N; i++) {
+    // we accumulate because this is "spiritually" correct in DL - grads
+    // accumulate on each `backward()` call.
+    dinp1[i] += dout[i];
+    dinp2[i] += dout[i];
+  }
+}
+
 #define GELU_SCALING_FACTOR sqrtf(2.0f / M_PI)
 
 /**
@@ -590,6 +603,20 @@ void gelu_forward(float *out, float *inp, int N) {
     float x = inp[i];
     float cube = 0.044715f * x * x * x;
     out[i] = 0.5f * x * (1.0f + tanhf(GELU_SCALING_FACTOR * (x + cube)));
+  }
+}
+
+void gelu_backward(float *dout, float *dinp, float *inp, int N) {
+#pragma omp parallel for
+  for (int i = 0; i < N; i++) {
+    float x = inp[i];
+    float cube = 0.044715f * x * x * x;
+    float tanh_arg = GELU_SCALING_FACTOR * (x + cube);
+    float tanh_out = tanhf(tanh_arg);
+    float coshf_out = coshf(tanh_arg);
+    float sech_out = 1.0f / (coshf_out * coshf_out);
+    float local_grad = 0.5f * (1.0f + tanh_out) + x * 0.5f * sech_out * GELU_SCALING_FACTOR * (1.0f + 3.0f * 0.044715f * x * x);
+    dinp[i] += dout[i] * local_grad;
   }
 }
 
@@ -785,7 +812,7 @@ void gpt2_forward(GPT2 *model, int *inputs, int *targets, size_t B, size_t T) {
     layernorm_forward(l_ln2, l_residual2, l_ln2_mean, l_ln2_rstd, l_ln2w, l_ln2b, B, T, C);
     matmul_forward(l_fch, l_ln2, l_fcw, l_fcb, B, T, C, 4 * C);
     gelu_forward(l_fch_gelu, l_fch, B * T * 4 * C);
-    matmul_forward(l_fcproj, l_fch_gelu, l_fcprojw, l_fcprojb, B, T, C, C);
+    matmul_forward(l_fcproj, l_fch_gelu, l_fcprojw, l_fcprojb, B, T, 4 * C, C);
     residual_forward(l_residual3, l_fcproj, l_residual2, B * T * C);
   }
   residual = acts.residual3 + (L - 1) * B * T * C;
@@ -854,6 +881,62 @@ void gpt2_backward(GPT2 *model) {
   float *dresidual = grads_acts.residual3 + (L - 1) * B * T * C;
   layernorm_backward(dresidual, grads.lnfw, grads.lnfb, grads_acts.lnf, residual, params.lnfw, acts.lnf_mean,
                      acts.lnf_rstd, B, T, C);
+  for (int l = L - 1; l >= 0; l--) {
+    residual = (l == 0) ? acts.encoded : acts.residual3 + (l - 1) * B * T * C;
+    dresidual = (l == 0) ? grads_acts.encoded : grads_acts.residual3 + (l - 1) * B * T * C;
+
+    // get weight ptrs of this layer. we ignore biases because their gradient
+    // does not depend on their actual values. It adds up incoming gradients.
+    float *l_ln1w = params.ln1w + l * C;
+    float *l_qkvw = params.qkvw + l * 3 * C * C;
+    float *l_attnprojw = params.attnprojw + l * C * C;
+    float *l_fcw = params.fcw + l * 4 * C * C;
+    float *l_fcprojw = params.fcprojw + l * C * 4 * C;
+    // get gradient ptrs of this layer.
+    float *dl_ln1w = grads.ln1w + l * C;
+    float *dl_ln1b = grads.ln1b + l * C;
+    float *dl_qkvw = grads.qkvw + l * 3 * C * C;
+    float *dl_qkvb = grads.qkvb + l * 3 * C;
+    float *dl_attnprojw = grads.attnprojw + l * C * C;
+    float *dl_attnprojb = grads.attnprojb + l * C;
+    float *dl_ln2w = grads.ln2w + l * C;
+    float *dl_ln2b = grads.ln2b + l * C;
+    float *dl_fcw = grads.fcw + l * 4 * C * C;
+    float *dl_fcb = grads.fcb + l * 4 * C;
+    float *dl_fcprojw = grads.fcprojw + l * C * 4 * C;
+    float *dl_fcprojb = grads.fcprojb + l * C;
+    // get activation ptrs of this layer.
+    float *l_ln1 = acts.ln1 + l * B * T * C;
+    float *l_ln1_mean = acts.ln1_mean + l * B * T;
+    float *l_ln1_rstd = acts.ln1_rstd + l * B * T;
+    float *l_qkv = acts.qkv + l * B * T * 3 * C;
+    float *l_atty = acts.atty + l * B * T * C;
+    float *l_att = acts.att + l * B * NH * T * T;
+    float *l_residual2 = acts.residual2 + l * B * T * C;
+    float *l_ln2 = acts.ln2 + l * B * T * C;
+    float *l_ln2_mean = acts.ln2_mean + l * B * T;
+    float *l_ln2_rstd = acts.ln2_rstd + l * B * T;
+    float *l_fch = acts.fch + l * B * T * 4 * C;
+    float *l_fch_gelu = acts.fch_gelu + l * B * T * 4 * C;
+    // get activation gradient ptrs of this layer.
+    float *dl_ln1 = grads_acts.ln1 + l * B * T * C;
+    float *dl_qkv = grads_acts.qkv + l * B * T * 3 * C;
+    float *dl_atty = grads_acts.atty + l * B * T * C;
+    float *dl_preatt = grads_acts.preatt + l * B * NH * T * T;
+    float *dl_att = grads_acts.att + l * B * NH * T * T;
+    float *dl_attproj = grads_acts.attproj + l * B * T * C;
+    float *dl_residual2 = grads_acts.residual2 + l * B * T * C;
+    float *dl_ln2 = grads_acts.ln2 + l * B * T * C;
+    float *dl_fch = grads_acts.fch + l * B * T * 4 * C;
+    float *dl_fch_gelu = grads_acts.fch_gelu + l * B * T * 4 * C;
+    float *dl_fcproj = grads_acts.fcproj + l * B * T * C;
+    float *dl_residual3 = grads_acts.residual3 + l * B * T * C;
+
+    // backprop.
+    residual_backward(dl_residual3, dl_residual2, dl_fcproj, B * T * C);
+    matmul_backward(dl_fch_gelu, dl_fcprojw, dl_fcprojb, dl_fcproj, l_fch_gelu, l_fcprojw, B, T, 4 * C, C);
+    gelu_backward(dl_fch_gelu, dl_fcproj, l_fch, B * T * 4 * C);
+  }
 }
 
 void gpt2_build_from_checkpoint(GPT2 *model, const char *checkpoint_path) {
