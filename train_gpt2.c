@@ -614,8 +614,8 @@ void gelu_backward(float *dout, float *dinp, float *inp, int N) {
     float tanh_arg = GELU_SCALING_FACTOR * (x + cube);
     float tanh_out = tanhf(tanh_arg);
     float coshf_out = coshf(tanh_arg);
-    float sech_out = 1.0f / (coshf_out * coshf_out);
-    float local_grad = 0.5f * (1.0f + tanh_out) + x * 0.5f * sech_out * GELU_SCALING_FACTOR * (1.0f + 3.0f * 0.044715f * x * x);
+    float sech2_out = 1.0f / (coshf_out * coshf_out);
+    float local_grad = 0.5f * (1.0f + tanh_out) + x * 0.5f * sech2_out * GELU_SCALING_FACTOR * (1.0f + 3.0f * 0.044715f * x * x);
     dinp[i] += dout[i] * local_grad;
   }
 }
