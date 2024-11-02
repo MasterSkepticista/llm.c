@@ -695,6 +695,10 @@ void gelu_forward(float *out, float *inp, int N) {
   }
 }
 
+#pragma float_control(precise, on, push)
+#if defined(__GNUC__) && !defined(__clang__)
+__attribute__((optimize("no-finite-math-only")))
+#endif
 void gelu_backward(float *dout, float *dinp, float *inp, int N) {
 #pragma omp parallel for
   for (int i = 0; i < N; i++) {
