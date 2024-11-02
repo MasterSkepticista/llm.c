@@ -260,6 +260,7 @@ typedef struct {
  * @param C Embedding dimension.
  */
 void encoder_forward(float *out, int *inp, float *wte, float *wpe, int B, int T, int C) {
+#pragma omp parallel for collapse(2)
   for (int b = 0; b < B; b++) {
     for (int t = 0; t < T; t++) {
       // seek to the output position [b,t,:]
@@ -317,6 +318,7 @@ void encoder_backward(float *dwte, float *dwpe, float *dout, int *inp, int B, in
 void layernorm_forward(float *out, float *inp, float *mean, float *rstd, float *weight, float *bias, int B, int T,
                        int C) {
   float eps = 1e-5f;
+#pragma omp parallel for collapse(2)
   for (int b = 0; b < B; b++) {
     for (int t = 0; t < T; t++) {
       // seek to relevant row.
@@ -660,6 +662,7 @@ void attention_backward(float *dinp, float *dpreatt, float *datt, float *dout, f
  * Residual forward, simple add of two matrices/vectors.
  */
 void residual_forward(float *out, float *inp1, float *inp2, int N) {
+#pragma omp parallel for
   for (int i = 0; i < N; i++) {
     out[i] = inp1[i] + inp2[i];
   }
@@ -684,6 +687,7 @@ void residual_backward(float *dout, float *dinp1, float *dinp2, int N) {
  * Applies elementwise approximate GELU nonlinearity.
  */
 void gelu_forward(float *out, float *inp, int N) {
+#pragma omp parallel for
   for (int i = 0; i < N; i++) {
     float x = inp[i];
     float cube = 0.044715f * x * x * x;
@@ -751,6 +755,7 @@ void softmax_forward(float *probs, float *logits, int B, int T, int V, int Vp) {
  * @param targets Input tensor pointer of shape (B, T).
  */
 void crossentropy_forward(float *losses, float *probs, int *targets, int B, int T, int Vp) {
+#pragma omp parallel for collapse(2)
   for (int b = 0; b < B; b++) {
     for (int t = 0; t < T; t++) {
       float *probs_bt = probs + b * T * Vp + t * Vp;
@@ -770,6 +775,7 @@ void crossentropy_forward(float *losses, float *probs, int *targets, int B, int 
  */
 void crossentropy_softmax_backward(float *dlogits, float *dlosses, float *probs, int *targets, int B, int T, int V,
                                    int Vp) {
+#pragma omp parallel for collapse(2)
   for (int b = 0; b < B; b++) {
     for (int t = 0; t < T; t++) {
       float *dlogits_bt = dlogits + b * T * Vp + t * Vp;
@@ -1040,6 +1046,7 @@ void gpt2_update(GPT2 *model, float learning_rate, float beta1, float beta2, flo
     model->v_memory = (float *)calloc(model->num_parameters, sizeof(float));
   }
 
+#pragma omp parallel for
   for (size_t i = 0; i < model->num_parameters; i++) {
     float param = model->params_memory[i];
     float grad = model->grads_memory[i];
