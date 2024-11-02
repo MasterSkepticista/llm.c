@@ -278,6 +278,30 @@ void encoder_forward(float *out, int *inp, float *wte, float *wpe, int B, int T,
 }
 
 /**
+ * Backward on token and position embeddings.
+ *
+ * @param dwte Pointer to store token embedding gradient. Shape (Vp, C).
+ * @param dwpe Pointer to store position embedding gradient. Shape (T, C).
+ * @param dout Output-side gradient. Shape (B, T, C).
+ * @param inp Input token batch. Shape (B, T).
+ */
+void encoder_backward(float *dwte, float *dwpe, float *dout, int *inp, int B, int T, int C) {
+#pragma omp parallel for collapse(2)
+  for (int b = 0; b < B; b++) {
+    for (int t = 0; t < T; t++) {
+      float *dout_bt = dout + b * T * C + t * C;
+      int ix = inp[b * T + t];
+      float *dwte_ix = dwte + ix * C;
+      float *dwpe_t = dwpe + t * C;
+      for (int i = 0; i < C; i++) {
+        dwte_ix[i] += dout_bt[i];
+        dwpe_t[i] += dout_bt[i];
+      }
+    }
+  }
+}
+
+/**
  * @brief LayerNorm forward pass.
  *
  * @param out Pointer to output activation tensor of shape (B, T, C)
@@ -1007,6 +1031,7 @@ void gpt2_backward(GPT2 *model) {
     matmul_backward(dl_ln1, dl_qkvw, dl_qkvb, dl_qkv, l_ln1, l_qkvw, B, T, C, 3 * C);
     layernorm_backward(dresidual, dl_ln1w, dl_ln1b, dl_ln1, residual, l_ln1w, l_ln1_mean, l_ln1_rstd, B, T, C);
   }
+  encoder_backward(grads.wte, grads.wpe, grads_acts.encoded, model->inputs, B, T, C);
 }
 
 void gpt2_build_from_checkpoint(GPT2 *model, const char *checkpoint_path) {
