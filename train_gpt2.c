@@ -547,7 +547,7 @@ void attention_forward(float *out, float *preatt, float *att, float *inp, int B,
   for (int b = 0; b < B; b++) {
     for (int t = 0; t < T; t++) {
       for (int h = 0; h < NH; h++) {
-        float *query = inp + (b * T * C3) + (t * C3) + h * head_dim;
+        float *query_t = inp + (b * T * C3) + (t * C3) + h * head_dim;
         float *preatt_bth = preatt + (b * NH * T * T) + (h * T * T) + t * T;
         float *att_bth = att + (b * NH * T * T) + (h * T * T) + t * T;
 
@@ -555,10 +555,10 @@ void attention_forward(float *out, float *preatt, float *att, float *inp, int B,
         float maxval = -10000.0f;
         for (int t2 = 0; t2 <= t; t2++) {
           // key = inp[b, 0:t, c:2c]
-          float *key = inp + (b * T * C3) + (t2 * C3) + (C + h * head_dim);
+          float *key_t2 = inp + (b * T * C3) + (t2 * C3) + (h * head_dim) + C;
           float val = 0.0f;
           for (int i = 0; i < head_dim; i++) {
-            val += query[i] * key[i];
+            val += query_t[i] * key_t2[i];
           }
           val *= scale;
           maxval = (val > maxval) ? val : maxval;
