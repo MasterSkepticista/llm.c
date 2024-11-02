@@ -572,6 +572,67 @@ void attention_forward(float *out, float *preatt, float *att, float *inp, int B,
 }
 
 /**
+ * Backward pass on dot-product attention operation.
+ *
+ * @param dinp Pointer to store input-side gradient. Shape (B, T, 3C).
+ * @param dpreatt Pointer to store pre-softmax score gradient. Shape (B, NH, T, T).
+ * @param datt Pointer to store softmax score gradient. Shape (B, NH, T, T).
+ * @param dout Output-side gradient that will be backpropagated. Shape (B, T, C).
+ * @param inp QKV Input to attention operation during forward pass. Shape (B, T, 3C).
+ * @param att Softmax Attention scores during forward pass. Shape (B, NH, T, T).
+ */
+void attention_backward(float *dinp, float *dpreatt, float *datt, float *dout, float *inp, float *att, int B, int T,
+                        int C, int NH) {
+  int C3 = 3 * C;
+  int head_dim = C / NH;
+  float scale = 1.0f / sqrtf(head_dim);
+
+#pragma omp parallel for collapse(3)
+  for (int b = 0; b < B; b++) {
+    for (int t = 0; t < T; t++) {
+      for (int h = 0; h < NH; h++) {
+        float *dpreatt_bth = dpreatt + b * NH * T * T + h * T * T + t * T;
+        float *query_bth = inp + b * T * C3 + t * C3 + h * head_dim;
+        float *dquery_bth = dinp + b * T * C3 + t * C3 + h * head_dim;
+
+        // att @ V = atty
+        // datt = dout @ V; dinp[..., 2C:3C] = dout @ att
+        float *att_bth = att + b * NH * T * T + h * T * T + t * T;
+        float *datt_bth = datt + b * NH * T * T + h * T * T + t * T;
+        float *dout_bth = dout + b * T * C + t * C + h * head_dim;
+        for (int t2 = 0; t2 < t; t2++) {
+          float *value_t2 = inp + b * T * C3 + t2 * C3 + 2 * C + h * head_dim;
+          float *dvalue_t2 = dinp + b * T * C3 + t2 * C3 + 2 * C + h * head_dim;
+          for (int i = 0; i < head_dim; i++) {
+            datt_bth[t2] += dout_bth[i] * value_t2[i];
+            dvalue_t2[i] += dout_bth[i] * att_bth[t2];
+          }
+        }
+
+        // softmax backward
+        for (int t2 = 0; t2 <= t; t2++) {
+          for (int t3 = 0; t3 <= t; t3++) {
+            float indicator = (t2 == t3) ? 1.0f : 0.0f;
+            float local_derivative = att_bth[t2] * (indicator - att_bth[t3]);
+            dpreatt_bth[t3] += local_derivative * datt_bth[t2];
+          }
+        }
+
+        // query/key backward
+        for (int t2 = 0; t2 <= t; t2++) {
+          float *key_bt2h = inp + b * T * C3 + t2 * C3 + h * head_dim + C;
+          float *dkey_bt2h = dinp + b * T * C3 + t2 * C3 + h * head_dim + C;
+          for (int i = 0; i < head_dim; i++) {
+            dquery_bth[i] += key_bt2h[i] * dpreatt_bth[t2] * scale;
+            dkey_bt2h[i] += query_bth[i] * dpreatt_bth[t2] * scale;
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
  * Residual forward, simple add of two matrices/vectors.
  */
 void residual_forward(float *out, float *inp1, float *inp2, int N) {
@@ -891,6 +952,7 @@ void gpt2_backward(GPT2 *model) {
     float *l_ln1w = params.ln1w + l * C;
     float *l_qkvw = params.qkvw + l * 3 * C * C;
     float *l_attnprojw = params.attnprojw + l * C * C;
+    float *l_ln2w = params.ln2w + l * C;
     float *l_fcw = params.fcw + l * 4 * C * C;
     float *l_fcprojw = params.fcprojw + l * C * 4 * C;
     // get gradient ptrs of this layer.
@@ -937,6 +999,13 @@ void gpt2_backward(GPT2 *model) {
     residual_backward(dl_residual3, dl_residual2, dl_fcproj, B * T * C);
     matmul_backward(dl_fch_gelu, dl_fcprojw, dl_fcprojb, dl_fcproj, l_fch_gelu, l_fcprojw, B, T, 4 * C, C);
     gelu_backward(dl_fch_gelu, dl_fcproj, l_fch, B * T * 4 * C);
+    matmul_backward(dl_ln2, dl_fcw, dl_fcb, dl_fch, l_ln2, l_fcw, B, T, C, 4 * C);
+    layernorm_backward(dl_residual2, dl_ln2w, dl_ln2b, dl_ln2, l_residual2, l_ln2w, l_ln2_mean, l_ln2_rstd, B, T, C);
+    residual_backward(dl_residual2, dresidual, dl_attproj, B * T * C);
+    matmul_backward(dl_atty, dl_attnprojw, dl_attnprojb, dl_attproj, l_atty, l_attnprojw, B, T, C, C);
+    attention_backward(dl_qkv, dl_preatt, dl_att, dl_atty, l_qkv, l_att, B, T, C, NH);
+    matmul_backward(dl_ln1, dl_qkvw, dl_qkvb, dl_qkv, l_ln1, l_qkvw, B, T, C, 3 * C);
+    layernorm_backward(dresidual, dl_ln1w, dl_ln1b, dl_ln1, residual, l_ln1w, l_ln1_mean, l_ln1_rstd, B, T, C);
   }
 }
 
