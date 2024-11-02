@@ -1034,6 +1034,42 @@ void gpt2_backward(GPT2 *model) {
   encoder_backward(grads.wte, grads.wpe, grads_acts.encoded, model->inputs, B, T, C);
 }
 
+void gpt2_update(GPT2 *model, float learning_rate, float beta1, float beta2, float eps, float weight_decay, int t) {
+  if (model->m_memory == NULL) {
+    model->m_memory = (float *)calloc(model->num_parameters, sizeof(float));
+    model->v_memory = (float *)calloc(model->num_parameters, sizeof(float));
+  }
+
+  for (size_t i = 0; i < model->num_parameters; i++) {
+    float param = model->params_memory[i];
+    float grad = model->grads_memory[i];
+
+    // update first moment (momentum)
+    float m = beta1 * model->m_memory[i] + (1.0f - beta1) * grad;
+    // update second moment (RMSprop)
+    float v = beta2 * model->v_memory[i] + (1.0f - beta2) * grad * grad;
+    // bias-correct both moments
+    float m_hat = m / (1.0f - powf(beta1, t));
+    float v_hat = v / (1.0f - powf(beta2, t));
+
+    // update
+    model->m_memory[i] = m;
+    model->v_memory[i] = v;
+    model->params_memory[i] -= learning_rate * (m_hat / (sqrtf(v_hat) + eps) + weight_decay * param);
+  }
+}
+
+void gpt2_free(GPT2 *model) {
+  free(model->params_memory);
+  free(model->grads_memory);
+  free(model->m_memory);
+  free(model->v_memory);
+  free(model->act_memory);
+  free(model->grads_acts_memory);
+  free(model->inputs);
+  free(model->targets);
+}
+
 void gpt2_build_from_checkpoint(GPT2 *model, const char *checkpoint_path) {
   // read model data from a checkpoint file.
   FILE *model_file = fopenCheck(checkpoint_path, "rb");
@@ -1158,6 +1194,7 @@ int main() {
     gpt2_forward(&model, train_loader.inputs, train_loader.targets, B, T);
     gpt2_zero_grad(&model);
     gpt2_backward(&model);
+    gpt2_update(&model, 1e-4f, 0.9f, 0.999f, 1e-8f, 0.0f, step + 1);
     clock_gettime(CLOCK_MONOTONIC, &end);
     double time_elapsed_s = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
     printf("Step %d: train loss %f (took %f ms)\n", step, model.mean_loss, time_elapsed_s * 1e3f);
@@ -1167,7 +1204,7 @@ int main() {
   dataloader_free(&train_loader);
   dataloader_free(&val_loader);
   tokenizer_free(&tokenizer);
-  // gpt2_free(&model);
+  gpt2_free(&model);
   free(gen_tokens);
   return 0;
 }
