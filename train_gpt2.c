@@ -457,7 +457,7 @@ void matmul_forward(float *out, const float *inp, const float *weight, const flo
       // initialize the tile.
       float result[TILE_SIZE];
       for (int t = 0; t < TILE_SIZE; t++) {
-        result[t] = (bias != NULL) ? bias[t] : 0.0f;
+        result[t] = (bias != NULL) ? bias[o] : 0.0f;
       }
 
       // compute tiled inner dot product
@@ -552,7 +552,7 @@ void attention_forward(float *out, float *preatt, float *att, float *inp, int B,
         float *att_bth = att + (b * NH * T * T) + (h * T * T) + t * T;
 
         // preatt = (Q @ K.T) / sqrt(d_k)
-        float maxval = -1e5f;
+        float maxval = -10000.0f;
         for (int t2 = 0; t2 <= t; t2++) {
           // key = inp[b, 0:t, c:2c]
           float *key = inp + (b * T * C3) + (t2 * C3) + (C + h * head_dim);
@@ -568,7 +568,7 @@ void attention_forward(float *out, float *preatt, float *att, float *inp, int B,
         // att = softmax(preatt)
         float expsum = 0.0f;
         for (int t2 = 0; t2 <= t; t2++) {
-          float expv = expf(preatt[t2] - maxval);
+          float expv = expf(preatt_bth[t2] - maxval);
           expsum += expv;
           att_bth[t2] = expv;
         }
@@ -587,7 +587,7 @@ void attention_forward(float *out, float *preatt, float *att, float *inp, int B,
         for (int t2 = 0; t2 <= t; t2++) {
           float *value = inp + b * T * C3 + t2 * C3 + (2 * C + h * head_dim);
           for (int i = 0; i < head_dim; i++) {
-            out_bth[i] += att_bth[t2] * value[t2];
+            out_bth[i] += att_bth[t2] * value[i];
           }
         }
       }
@@ -866,7 +866,7 @@ void gpt2_forward(GPT2 *model, int *inputs, int *targets, size_t B, size_t T) {
     float *l_attnprojb = params.attnprojb + l * C;
     float *l_ln2w = params.ln2w + l * C;
     float *l_ln2b = params.ln2b + l * C;
-    float *l_fcw = params.fcw + l * 4 * C + C;
+    float *l_fcw = params.fcw + l * 4 * C * C;
     float *l_fcb = params.fcb + l * 4 * C;
     float *l_fcprojw = params.fcprojw + l * C * 4 * C;
     float *l_fcprojb = params.fcprojb + l * C;
