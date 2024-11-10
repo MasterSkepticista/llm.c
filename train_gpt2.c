@@ -370,7 +370,6 @@ void layernorm_forward(float *out, float *inp, float *mean, float *rstd, float *
  */
 void layernorm_backward(float *dinp, float *dweight, float *dbias, float *dout, float *inp, float *weight, float *mean,
                         float *rstd, int B, int T, int C) {
-  // #pragma omp parallel for collapse(2)
   for (int b = 0; b < B; b++) {
     for (int t = 0; t < T; t++) {
       float *dout_bt = dout + b * T * C + t * C;
@@ -713,6 +712,7 @@ void gelu_backward(float *dout, float *dinp, float *inp, int N) {
     dinp[i] += dout[i] * local_grad;
   }
 }
+#pragma float_control(pop)
 
 /**
  * Applies softmax on the outer dimension of `logits`.
@@ -1142,6 +1142,33 @@ void gpt2_build_from_checkpoint(GPT2 *model, const char *checkpoint_path) {
   model->mean_loss = -1.0f;
 }
 
+unsigned int random_u32(uint64_t *state) {
+  // xorshift rng: https://en.wikipedia.org/wiki/Xorshift#xorshift.2A
+  *state ^= *state >> 12;
+  *state ^= *state << 25;
+  *state ^= *state >> 27;
+  return (*state * 0x2545F4914F6CDD1Dull) >> 32;
+}
+
+/**
+ * Generates a random float in the range [0, 1).
+ */
+float random_f32(uint64_t *state) { return (random_u32(state) >> 8) / 16777216.0f; }
+
+/**
+ * Sample a token from a multinomial distribution.
+ */
+int sample_mult(float *probabilities, int n, float coin) {
+  float cdf = 0.0f;
+  for (int i = 0; i < n; i++) {
+    cdf += probabilities[i];
+    if (coin < cdf) {
+      return i;
+    }
+  }
+  return n - 1;
+}
+
 int main() {
   // build the GPT-2 model from a checkpoint.
   GPT2 model;
@@ -1193,8 +1220,20 @@ int main() {
 
       // sample autoregressively.
       printf("generating:\n---\n");
-      for (int i = 0; i < gen_steps; i++) {
-        // forward
+      for (int t = 1; t < gen_steps; t++) {
+        gpt2_forward(&model, gen_tokens, NULL, B, T);
+        float *probs = model.acts.probs + (t - 1) * model.config.padded_vocab_size;
+        float coin = random_f32(&rng_state);
+        int next_token = sample_mult(probs, model.config.vocab_size, coin);
+        gen_tokens[t] = next_token;
+
+        if (tokenizer.init_ok) {
+          const char *token_str = tokenizer_decode(&tokenizer, next_token);
+          safe_printf(token_str);
+        } else {
+          printf("%d ", next_token);
+        }
+        fflush(stdout);
       }
       printf("\n---\n");
     }
