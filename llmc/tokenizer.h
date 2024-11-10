@@ -5,7 +5,7 @@ This is all we need for unconditional generation.
 */
 #include <assert.h>
 #include <stdint.h>
-
+#include <ctype.h>
 #include "utils.h"
 
 typedef struct {
@@ -14,6 +14,18 @@ typedef struct {
   int init_ok;
   int eot_token;
 } Tokenizer;
+
+void safe_printf(const char *piece) {
+  if (piece == NULL) {return;}
+  if (piece[0] == '\0') {return;}
+  if (piece[1] == '\0') {
+    unsigned char byte_val = piece[0];
+    if (!(isprint(byte_val) || isspace(byte_val))) {
+      return;
+    }
+  }
+  printf("%s", piece);
+}
 
 void tokenizer_init(Tokenizer *tokenizer, const char *filename) {
   FILE *file = fopen(filename, "rb");
