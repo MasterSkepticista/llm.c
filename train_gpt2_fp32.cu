@@ -48,9 +48,110 @@ typedef struct {
   int channels;           // hidden size of the model.
 } GPT2Config;
 
+#define NUM_PARAMETER_TENSORS 16
+typedef struct {
+  float *wte;      // (Vp, C)
+  float *wpe;      // (T, C)
+  float *ln1w;     // (L, C)
+  float *ln1b;     // (L, C)
+  float *qkvw;     // (L, 3*C, C)
+  float *qkvb;     // (L, 3*C)
+  float *projw;    // (L, C, C)
+  float *projb;    // (L, C)
+  float *ln2w;     // (L, C)
+  float *ln2b;     // (L, C)
+  float *fcw;      // (L, 4*C, C)
+  float *fcb;      // (L, 4*C)
+  float *fcprojw;  // (L, C, 4*C)
+  float *fcprojb;  // (L, C)
+  float *lnfw;     // (C,)
+  float *lnfb;     // (C,)
+} ParameterTensors;
+
 typedef struct {
   GPT2Config config;
+
+  ParameterTensors params;
+  size_t param_sizes[NUM_PARAMETER_TENSORS];
+  float *params_memory;
+  size_t num_parameters;
+
+  // Optimizer moments
+  float *m_memory;
+  float *v_memory;
+
+  // Intermediates
+  float *grads_memory;
+  float *acts_memory;
+  float *grads_acts_memory;
+
+  // Inputs/outputs
+  int seq_len;
+  int batch_size;
+  int *inputs;
+  int *targets;
+  float mean_loss;
+  float *cpu_losses;
+  
 } GPT2;
+
+void fill_in_parameter_sizes(size_t *param_sizes, GPT2Config config) {
+  int Vp = config.padded_vocab_size;
+  int C = config.channels;
+  int T = config.max_seq_len;
+  int L = config.num_layers;
+  param_sizes[0] = Vp * C;            // wte
+  param_sizes[1] = T * C;             // wpe
+  param_sizes[2] = L * C;             // ln1w
+  param_sizes[3] = L * C;             // ln1b
+  param_sizes[4] = L * (3 * C) * C;   // qkvw
+  param_sizes[5] = L * (3 * C);       // qkvb
+  param_sizes[6] = L * C * C;         // projw
+  param_sizes[7] = L * C;             // projb
+  param_sizes[8] = L * C;             // ln2w
+  param_sizes[9] = L * C;             // ln2b
+  param_sizes[10] = L * (4 * C) * C;  // fcw
+  param_sizes[11] = L * (4 * C);      // fcb
+  param_sizes[12] = L * C * (4 * C);  // fcprojw
+  param_sizes[13] = L * C;            // fcprojb
+  param_sizes[14] = C;                // lnfw
+  param_sizes[15] = C;                // lnfb
+}
+
+/**
+ * Allocate memory for model parameters.
+ *
+ * @param params: Pointer to the parameter tensors.
+ * @param param_sizes: Array of sizes of each parameter tensor.
+ * @param on_device: Allocate memory on device (1) or host (0).
+ * @return: Pointer to the allocated memory.
+ */
+float *malloc_and_point_parameters(ParameterTensors *params, size_t *param_sizes, int on_device) {
+  // malloc at once on device/host for all params.
+  size_t num_parameters = 0;
+  for (int i = 0; i < NUM_PARAMETER_TENSORS; i++) {
+    num_parameters += param_sizes[i];
+  }
+  float *params_memory;
+  size_t total_bytes = num_parameters * sizeof(float);
+  if (on_device) {
+    cudaCheck(cudaMalloc((void **)&params_memory, total_bytes));
+  } else {
+    params_memory = (float *)mallocCheck(total_bytes);
+  }
+
+  // point each param to its relevant memory block.
+  float **ptrs[] = {&params->wte,     &params->wpe,     &params->ln1w, &params->ln1b, &params->qkvw, &params->qkvb,
+                    &params->projw,   &params->projb,   &params->ln2w, &params->ln2b, &params->fcw,  &params->fcb,
+                    &params->fcprojw, &params->fcprojb, &params->lnfw, &params->lnfb};
+  float *params_memory_iterator = params_memory;
+  for (int i = 0; i < NUM_PARAMETER_TENSORS; i++) {
+    *(ptrs[i]) = params_memory_iterator;
+    params_memory_iterator += param_sizes[i];
+  }
+
+  return params_memory;
+}
 
 void gpt2_build_from_checkpoint(GPT2 *model, const char *checkpoint) {
   printf("Loading checkpoint from %s\n", checkpoint);
@@ -69,7 +170,38 @@ void gpt2_build_from_checkpoint(GPT2 *model, const char *checkpoint) {
   model->config.num_heads = model_header[5];
   model->config.channels = model_header[6];
   model->config.padded_vocab_size = model_header[7];
+
+  // allocate space for all the parameters and read them in.
+  fill_in_parameter_sizes(model->param_sizes, model->config);
+  size_t num_parameters = 0;
+  for (int i = 0; i < NUM_PARAMETER_TENSORS; i++) {
+    num_parameters += model->param_sizes[i];
+  }
+  model->num_parameters = num_parameters;
+  printf("Number of parameters: %zu\n", num_parameters);
+
+  // Allocate memory for model parameters on the device.
+  model->params_memory = malloc_and_point_parameters(&model->params, model->param_sizes, 1);
   
+  // Copy model params from file to the params_memory pointer.
+  float *params_memory_cpu = (float*)mallocCheck(num_parameters * sizeof(float));
+  freadCheck(params_memory_cpu, sizeof(float), num_parameters, file);
+  cudaCheck(cudaMemcpy(model->params_memory, params_memory_cpu, sizeof(float) * num_parameters, cudaMemcpyHostToDevice));
+  free(params_memory_cpu);
+  fcloseCheck(file);
+  
+  // other inits.
+  model->acts_memory = NULL;
+  model->grads_memory = NULL;
+  model->m_memory = NULL;
+  model->v_memory = NULL;
+  model->grads_acts_memory = NULL;
+  model->inputs = NULL;
+  model->targets = NULL;
+  model->cpu_losses = NULL;
+  model->batch_size = 0;
+  model->seq_len = 0;
+  model->mean_loss = -1.0f;
 }
 
 /**
