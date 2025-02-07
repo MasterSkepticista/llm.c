@@ -6,8 +6,13 @@
 #include <cuda_runtime.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
+#include "llmc/dataloader.h"
+#include "llmc/logger.h"
+#include "llmc/tokenizer.h"
 #include "llmc/utils.h"
+
 /**
  * CUDA error checking.
  */
@@ -92,7 +97,7 @@ typedef struct {
   int *targets;
   float mean_loss;
   float *cpu_losses;
-  
+
 } GPT2;
 
 void fill_in_parameter_sizes(size_t *param_sizes, GPT2Config config) {
@@ -154,7 +159,6 @@ float *malloc_and_point_parameters(ParameterTensors *params, size_t *param_sizes
 }
 
 void gpt2_build_from_checkpoint(GPT2 *model, const char *checkpoint) {
-  printf("Loading checkpoint from %s\n", checkpoint);
   FILE *file = fopenCheck(checkpoint, "rb");
   int model_header[256];
   freadCheck(model_header, sizeof(int), 256, file);
@@ -178,18 +182,18 @@ void gpt2_build_from_checkpoint(GPT2 *model, const char *checkpoint) {
     num_parameters += model->param_sizes[i];
   }
   model->num_parameters = num_parameters;
-  printf("Number of parameters: %zu\n", num_parameters);
 
   // Allocate memory for model parameters on the device.
   model->params_memory = malloc_and_point_parameters(&model->params, model->param_sizes, 1);
-  
+
   // Copy model params from file to the params_memory pointer.
-  float *params_memory_cpu = (float*)mallocCheck(num_parameters * sizeof(float));
+  float *params_memory_cpu = (float *)mallocCheck(num_parameters * sizeof(float));
   freadCheck(params_memory_cpu, sizeof(float), num_parameters, file);
-  cudaCheck(cudaMemcpy(model->params_memory, params_memory_cpu, sizeof(float) * num_parameters, cudaMemcpyHostToDevice));
+  cudaCheck(
+      cudaMemcpy(model->params_memory, params_memory_cpu, sizeof(float) * num_parameters, cudaMemcpyHostToDevice));
   free(params_memory_cpu);
   fcloseCheck(file);
-  
+
   // other inits.
   model->acts_memory = NULL;
   model->grads_memory = NULL;
@@ -291,5 +295,63 @@ int main(int argc, char *argv[]) {
   // Build GPT2 model from a checkpoint.
   GPT2 model;
   gpt2_build_from_checkpoint(&model, "gpt2_124M.bin");
+  printf("| max_sequence_len T  | %-50d |\n", model.config.max_seq_len);
+  printf("| vocab_size V        | %-50d |\n", model.config.vocab_size);
+  printf("| padded_vocab_size Vp| %-50d |\n", model.config.padded_vocab_size);
+  printf("| num_layers L        | %-50d |\n", model.config.num_layers);
+  printf("| num_heads NH        | %-50d |\n", model.config.num_heads);
+  printf("| channels C          | %-50d |\n", model.config.channels);
+  printf("| num_parameters      | %-50zu |\n", model.num_parameters);
+  printf("+---------------------+----------------------------------------------------+\n");
+  printf("Allocated %d MiB for model parameters\n", (int)round(model.num_parameters * sizeof(float) / (1024 * 1024)));
+
+  // Build dataloaders.
+  DataLoader train_loader, val_loader;
+  dataloader_init(&train_loader, train_data_pattern, B, T, 0, 1, 1);
+  dataloader_init(&val_loader, val_data_pattern, B, T, 0, 1, 0);
+  int train_num_batches = train_loader.num_tokens / (B * T);
+  int val_num_batches = val_loader.num_tokens / (B * T);
+  if (val_num_batches > val_max_steps) {
+    val_num_batches = val_max_steps;
+  }
+  printf("| train_num_batches   | %-50d |\n", train_num_batches);
+  printf("| val_num_batches     | %-50d |\n", val_num_batches);
+  printf("+---------------------+----------------------------------------------------+\n");
+
+  // Set up the logger.
+  Logger logger;
+  logger_init(&logger, output_log_file);
+
+  // Build tokenizer.
+  Tokenizer tokenizer;
+  tokenizer_init(&tokenizer, "gpt2_tokenizer.bin");
+
+  // Some memory for generating samples from the model.
+
+  // train
+  struct timespec start, end;
+  for (int step = 0; step <= train_num_batches; step++) {
+    int last_step = step == train_num_batches;
+    if (last_step) {
+      break;
+    }
+
+    // do a train step.
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    dataloader_next_batch(&train_loader);
+    // gpt2_forward();
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    double train_step_time = (end.tv_sec - start.tv_sec) + 1e-9 * (end.tv_nsec - start.tv_nsec);
+    int tokens_per_second = B * T / train_step_time;
+    printf("Step %d/%d, train_loss: %f (%f ms, %d tok/s)\n", step + 1, train_num_batches, model.mean_loss,
+           train_step_time * 1000, tokens_per_second);
+  }
+
+  // free
+  dataloader_free(&train_loader);
+  dataloader_free(&val_loader);
+  tokenizer_free(&tokenizer);
+
   cublasCheck(cublasDestroy(cublas_handle));
+  return 0;
 }
