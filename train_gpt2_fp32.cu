@@ -73,6 +73,33 @@ typedef struct {
   float *lnfb;     // (C,)
 } ParameterTensors;
 
+#define NUM_ACTIVATION_TENSORS 23
+typedef struct {
+  float *encoded;    // (B, T, C)
+  float *ln1;        // (L, B, T, C)
+  float *ln1_mean;   // (L, B, T)
+  float *ln1_rstd;   // (L, B, T)
+  float *qkv;        // (L, B, T, 3*C)
+  float *atty;       // (L, B, T, C)
+  float *preatt;     // (L, B, NH, T, T)
+  float *attn;       // (L, B, NH, T, T)
+  float *attn_proj;  // (L, B, T, C)
+  float *residual2;  // (L, B, T, C)
+  float *ln2;        // (L, B, T, C)
+  float *ln2_mean;   // (L, B, T)
+  float *ln2_rstd;   // (L, B, T)
+  float *fch;        // (L, B, T, 4*C)
+  float *fch_gelu;   // (L, B, T, 4*C)
+  float *fcproj;     // (L, B, T, C)
+  float *residual3;  // (L, B, T, C)
+  float *lnf;        // (B, T, C)
+  float *lnf_mean;   // (B, T)
+  float *lnf_rstd;   // (B, T)
+  float *logits;     // (B, T, Vp)
+  float *probs;      // (B, T, Vp)
+  float *losses;     // (B, T)
+} ActivationTensors;
+
 typedef struct {
   GPT2Config config;
 
@@ -86,8 +113,11 @@ typedef struct {
   float *v_memory;
 
   // Intermediates
-  float *grads_memory;
+  ActivationTensors acts;
+  size_t acts_sizes[NUM_ACTIVATION_TENSORS];
   float *acts_memory;
+
+  float *grads_memory;
   float *grads_acts_memory;
 
   // Inputs/outputs
@@ -158,6 +188,70 @@ float *malloc_and_point_parameters(ParameterTensors *params, size_t *param_sizes
   return params_memory;
 }
 
+void fill_in_activation_sizes(GPT2Config config, size_t *acts_sizes, int B, int T) {
+  int Vp = config.padded_vocab_size;
+  int V = config.vocab_size;
+  int NH = config.num_heads;
+  int L = config.num_layers;
+  int C = config.channels;
+  acts_sizes[0] = B * T * C;             // encoded
+  acts_sizes[1] = L * B * T * C;         // ln1
+  acts_sizes[2] = L * B * T;             // ln1_mean
+  acts_sizes[3] = L * B * T;             // ln1_rstd
+  acts_sizes[4] = L * B * T * (3 * C);   // qkv
+  acts_sizes[5] = L * B * T * C;         // atty
+  acts_sizes[6] = L * B * NH * T * T;    // preatt
+  acts_sizes[7] = L * B * NH * T * T;    // attn
+  acts_sizes[8] = L * B * T * C;         // attn_proj
+  acts_sizes[9] = L * B * T * C;         // residual2
+  acts_sizes[10] = L * B * T * C;        // ln2
+  acts_sizes[11] = L * B * T;            // ln2_mean
+  acts_sizes[12] = L * B * T;            // ln2_rstd
+  acts_sizes[13] = L * B * T * (4 * C);  // fch
+  acts_sizes[14] = L * B * T * (4 * C);  // fch_gelu
+  acts_sizes[15] = L * B * T * C;        // fc_proj
+  acts_sizes[16] = L * B * T * C;        // residual3
+  acts_sizes[17] = L * B * T * C;        // lnf
+  acts_sizes[18] = L * B * T;            // lnf_mean
+  acts_sizes[19] = L * B * T;            // lnf_rstd
+  acts_sizes[20] = B * T * Vp;           // logits
+  acts_sizes[21] = B * T * Vp;           // probs
+  acts_sizes[22] = B * T;                // losses
+}
+
+float *malloc_and_point_activations(ActivationTensors *acts, size_t *acts_sizes) {
+  // Count total activation size.
+  size_t num_activations = 0;
+  for (int i = 0; i < NUM_ACTIVATION_TENSORS; i++) {
+    num_activations += acts_sizes[i];
+  }
+  size_t total_bytes = sizeof(float) * num_activations;
+
+  // Allocate one-shot.
+  float *acts_memory;
+  cudaCheck(cudaMalloc((void **)&acts_memory, total_bytes));
+  printf("Allocating %.3f MiB for activations.\n", (float)total_bytes / (1024 * 1024));
+
+  // Point each activation block to its respective area.
+  float **ptrs[] = {&acts->encoded, &acts->ln1,       &acts->ln1_mean, &acts->ln1_rstd,  &acts->qkv,
+                    &acts->atty,    &acts->preatt,    &acts->attn,     &acts->attn_proj, &acts->residual2,
+                    &acts->ln2,     &acts->ln2_mean,  &acts->ln2_rstd, &acts->fch,       &acts->fch_gelu,
+                    &acts->fcproj,  &acts->residual3, &acts->lnf,      &acts->lnf_mean,  &acts->lnf_rstd,
+                    &acts->logits,  &acts->probs,     &acts->losses};
+  float *acts_memory_iterator = acts_memory;
+  for (int i = 0; i < NUM_ACTIVATION_TENSORS; i++) {
+    *ptrs[i] = acts_memory_iterator;
+    acts_memory_iterator += acts_sizes[i];
+  }
+  return acts_memory;
+}
+
+/**
+ * Load model parameters from a checkpoint file.
+ * @param model: Pointer to the GPT2 model.
+ * @param checkpoint: Path to the checkpoint file.
+ * @return: None.
+ */
 void gpt2_build_from_checkpoint(GPT2 *model, const char *checkpoint) {
   FILE *file = fopenCheck(checkpoint, "rb");
   int model_header[256];
@@ -206,6 +300,51 @@ void gpt2_build_from_checkpoint(GPT2 *model, const char *checkpoint) {
   model->batch_size = 0;
   model->seq_len = 0;
   model->mean_loss = -1.0f;
+}
+
+/**
+ * GPT2 forward pass
+ * @param model: Pointer to GPT2 Model instance
+ * @param inputs: Pointer to inputs tensor of shape (B, T).
+ * @param targets: Pointer to targets tensor of shape (B, T). Optional.
+ * @param B: Batch size
+ * @param T: Seq length
+ */
+void gpt2_forward(GPT2 *model, int *inputs, int *targets, int B, int T) {
+  if (model->params_memory == NULL) {
+    printf("Error: model was not initialized properly.");
+    exit(EXIT_FAILURE);
+  }
+
+  // Shorthands.
+  int V = model->config.vocab_size;
+  int Vp = model->config.padded_vocab_size;
+  int L = model->config.num_layers;
+  int NH = model->config.num_heads;
+  int C = model->config.channels;
+
+  // Validate token values.
+  for (int i = 0; i < B * T; i++) {
+    assert(0 <= inputs[i] && inputs[i] < V);
+    if (targets != NULL) {
+      assert(0 <= targets[i] && targets[i] < V);
+    }
+  }
+
+  // allocate space for all the activations lazily.
+  if (model->acts_memory == NULL) {
+    model->batch_size = B;
+    model->seq_len = T;
+    fill_in_activation_sizes(model->config, model->acts_sizes, B, T);
+    model->acts_memory = malloc_and_point_activations(&model->acts, model->acts_sizes);
+  }
+
+  // encoder forward
+  // loop - layers forward
+  // final ln forward
+  // decode to logits
+  // ce forward?
+  // loss
 }
 
 /**
@@ -339,7 +478,7 @@ int main(int argc, char *argv[]) {
     // do a train step.
     clock_gettime(CLOCK_MONOTONIC, &start);
     dataloader_next_batch(&train_loader);
-    // gpt2_forward();
+    gpt2_forward(&model, train_loader.inputs, train_loader.targets, B, T);
     clock_gettime(CLOCK_MONOTONIC, &end);
     double train_step_time = (end.tv_sec - start.tv_sec) + 1e-9 * (end.tv_nsec - start.tv_nsec);
     int tokens_per_second = B * T / train_step_time;
