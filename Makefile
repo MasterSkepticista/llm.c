@@ -4,6 +4,11 @@ CFLAGS = -Ofast -Wno-unused-result -Wno-ignored-pragmas -Wno-unknown-attributes
 LDLIBS = -lm
 CFLAGS_COND = -march=native
 
+# nvidia flags
+NVCC ?= nvcc
+NVCC_FLAGS = -arch=sm_86
+NVCC_LDFLAGS = -lcublas
+
 $(info ---------------------------------------------)
 # Check for USE_OMP environment variable
 ifeq ($(NO_OMP), 1)
@@ -20,7 +25,7 @@ else
 endif
 $(info ---------------------------------------------)
 
-TARGETS = train_gpt2 matmul
+TARGETS = train_gpt2 train_gpt2_fp32 matmul
 
 all: $(TARGETS)
 
@@ -29,6 +34,9 @@ train_gpt2: train_gpt2.c
 
 matmul: matmul.c
 	$(CC) $(CFLAGS) $(CFLAGS_COND) $^ $(LDLIBS) -o $@
+
+train_gpt2_fp32: train_gpt2_fp32.cu
+	$(NVCC) $(NVCC_FLAGS) $(NVCC_LDFLAGS) $^ -o $@
 
 clean:
 	rm -f $(TARGETS)
