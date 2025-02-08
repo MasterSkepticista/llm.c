@@ -116,6 +116,7 @@ typedef struct {
   ActivationTensors acts;
   size_t acts_sizes[NUM_ACTIVATION_TENSORS];
   float *acts_memory;
+  size_t num_activations;
 
   float *grads_memory;
   float *grads_acts_memory;
@@ -230,7 +231,6 @@ float *malloc_and_point_activations(ActivationTensors *acts, size_t *acts_sizes)
   // Allocate one-shot.
   float *acts_memory;
   cudaCheck(cudaMalloc((void **)&acts_memory, total_bytes));
-  printf("Allocating %.3f MiB for activations.\n", (float)total_bytes / (1024 * 1024));
 
   // Point each activation block to its respective area.
   float **ptrs[] = {&acts->encoded, &acts->ln1,       &acts->ln1_mean, &acts->ln1_rstd,  &acts->qkv,
@@ -336,7 +336,28 @@ void gpt2_forward(GPT2 *model, int *inputs, int *targets, int B, int T) {
     model->batch_size = B;
     model->seq_len = T;
     fill_in_activation_sizes(model->config, model->acts_sizes, B, T);
+    size_t num_activations = 0;
+    for (size_t i = 0; i < NUM_ACTIVATION_TENSORS; i++) {
+      num_activations += model->acts_sizes[i];
+    }
+    model->num_activations = num_activations;
     model->acts_memory = malloc_and_point_activations(&model->acts, model->acts_sizes);
+    printf("Allocating %zu MiB for activations.\n", (num_activations * sizeof(float)) >> 20);
+    // allocate for input/output
+    cudaCheck(cudaMalloc((void **)&model->inputs, sizeof(int) * B * T));
+    cudaCheck(cudaMalloc((void **)&model->targets, sizeof(int) * B * T));
+    cudaCheck(cudaMallocHost((void **)&model->cpu_losses, sizeof(float) * B * T));
+  } else {
+    // validate B, T.
+    if (B != model->batch_size || T != model->seq_len) {
+      printf("Model Expected: B=%d T=%d, Got: B=%d T=%d", model->batch_size, model->seq_len, B, T);
+      exit(EXIT_FAILURE);
+    }
+  }
+  // Copy inputs/targets to device.
+  cudaCheck(cudaMemcpy(model->inputs, inputs, sizeof(int) * B * T, cudaMemcpyHostToDevice));
+  if (targets != NULL) {
+    cudaCheck(cudaMemcpy(model->inputs, inputs, sizeof(int) * B * T, cudaMemcpyHostToDevice));
   }
 
   // encoder forward
