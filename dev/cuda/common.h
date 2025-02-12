@@ -46,6 +46,83 @@ typedef float floatN;
 #endif
 
 /**
+ * Packed128 data structure, which forces the compiler to use 128-bit loads/stores in GPUs
+ * that support the LDG.128 and STS.128 instructions. This is similar to float4 used in
+ * 32-bit floats, but supports arbitrary precision.
+ */
+template <typename T>
+struct alignas(16) Packed128 {
+  // e.g. sizeof(float4) is 16 (4x4 bytes) / sizeof(bfloat16) = 2, size = 8
+  // Therefore, if T is bfloat16 type, 8 elements are stored.
+  static constexpr int size = sizeof(int4) / sizeof(T);
+  T payload[size];
+
+  Packed128() = default;
+
+  __device__ explicit Packed128(int4 bits) {
+    static_assert(sizeof(bits) == sizeof(payload), "Size mismatch.");
+    memcpy(&payload, &bits, sizeof(bits));
+  }
+
+  // Some common fill utils
+  __device__ static Packed128 constant(T value) {
+    Packed128 result;
+    for (int k = 0; k < size; k++) {
+      result.payload[k] = value;
+    }
+    return result;
+  }
+
+  __device__ static Packed128 zeros() { return constant(0); }
+
+  __device__ static Packed128 ones() { return constant(1); }
+
+  // Operator overloads
+  __device__ T &operator[](int index) {
+    // returns reference to the index, allowing modifications
+    return payload[index];
+  }
+
+  __device__ const T &operator[](int index) const {
+    // returns const reference to the index, i.e, not allowing modifications.
+    // second `const` means the function does not modify class state. It is mandatory.
+    return payload[index];
+  }
+
+  __device__ int4 get_bits() const {
+    int4 bits;
+    static_assert(sizeof(bits) == sizeof(payload), "Size mismatch.");
+    memcpy(&bits, &payload, sizeof(bits));
+    return bits;
+  }
+};
+
+typedef Packed128<floatX> x128;
+
+// Load a Packed128 from an aligned memory address
+template <typename T>
+__device__ Packed128<T> load128(const T *address) {
+  return Packed128<T>{*reinterpret_cast<const int4 *>(address)};
+}
+
+// Load a Packed128 from an aligned memory address with streaming cache hint
+template <typename T>
+__device__ Packed128<T> load128cs(const T *address) {
+  return Packed128<T>{__ldcs(reinterpret_cast<const int4*>(address))};
+}
+
+// Store a Packed128 to an aligned memory address
+template <typename T>
+__device__ void store128(T* target, Packed128<T> value) {
+  *reinterpret_cast<int4*>(target) = value.get_bits();
+}
+
+// Store a Packed128 to an aligned memory address with streaming cache hint
+template <typename T>
+__device__ void store128cs(T* target, Packed128<T> value) {
+  __stcs(reinterpret_cast<int4*>(target), value.get_bits());
+}
+/**
  * Copy from host to device with DType conversion.
  */
 template <class TargetType>

@@ -52,6 +52,37 @@ __global__ void encoder_forward_kernel2(floatX *out, const int *inp, const float
   }
 }
 
+/**
+ * Use vector load/store to optimize adds.
+ */
+__global__ void encoder_forward_kernel3(floatX *out, const int *inp, const floatX *wte, const floatX *wpe, int B, int T,
+                                        int C) {
+  int idx = (blockDim.x * blockIdx.x + threadIdx.x) * x128::size;
+  int N = B * T * C;
+  if (idx < N) {
+    int bt = idx / C;
+    int b = bt / T;
+    int t = bt % T;
+    int c = idx % C;
+    int ix = inp[b * T + t];
+
+    floatX *out_btc = out + (b * T * C + t * C + c);
+    const floatX *wte_bt = wte + (ix * C + c);
+    const floatX *wpe_bt = wpe + (t * C + c);
+
+    // Load 128-byte vectors and add (local scope wpe/wte shadow variables)
+    x128 packed_out;
+    x128 wte = load128(wte_bt);
+    x128 wpe = load128(wpe_bt);
+
+    #pragma unroll
+    for (int k = 0; k < x128::size; k++) {
+      packed_out[k] = wte[k] + wpe[k];
+    }
+    store128(out_btc, packed_out);
+  }
+}
+
 void encoder_forward1(floatX *out, const int *inp, const floatX *wte, const floatX *wpe, int B, int T, int C,
                       int block_size) {
   const int N = B * T;
@@ -69,7 +100,12 @@ void encoder_forward2(floatX *out, const int *inp, const floatX *wte, const floa
 }
 
 void encoder_forward3(floatX *out, const int *inp, const floatX *wte, const floatX *wpe, int B, int T, int C,
-                      int block_size) {}
+                      int block_size) {
+  const int N = B * T * C;
+  const int grid_size = ceil_div(N, block_size * x128::size);
+  encoder_forward_kernel3<<<grid_size, block_size>>>(out, inp, wte, wpe, B, T, C);
+  cudaCheck(cudaGetLastError());
+}
 
 /**
  * Naive CPU Kernel to generate reference output.
@@ -169,15 +205,15 @@ int main(int argc, char **argv) {
     float elapsed_time =
         benchmark_kernel(repeat_times, encoder_forward, kernel_num, d_out, d_inp, d_wte, d_wpe, B, T, C, block_size);
 
-    // Estimate memory bandwidth achieved: Total memory_ops * bytes per value.
-    // * Read one inp token, one wte float, one wpe float
-    // * Write one out float
-    // Total = (1 + 3C) ops, 2 bytes each (4 bytes if f32)
-    #ifdef ENABLE_BF16
+// Estimate memory bandwidth achieved: Total memory_ops * bytes per value.
+// * Read one inp token, one wte float, one wpe float
+// * Write one out float
+// Total = (1 + 3C) ops, 2 bytes each (4 bytes if f32)
+#ifdef ENABLE_BF16
     int bytes_per_op = 2;
-    #else
+#else
     int bytes_per_op = 4;
-    #endif
+#endif
     long memory_ops = B * T * (1 + 3 * C) * bytes_per_op;
     float memory_bandwidth = memory_ops / elapsed_time / 1e6;
     printf("block_size %d | time %.4f ms | bandwidth %.2f GB/s\n", block_size, elapsed_time, memory_bandwidth);
