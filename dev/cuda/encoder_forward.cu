@@ -197,8 +197,10 @@ int main(int argc, char **argv) {
   }
 
   // Now that validated, benchmark the kernel.
-  printf("All results match. Starting benchmarks.\n");
-
+  printf("All results match. Starting benchmarks for .\n");
+  printf("+-----------------+-----------------+------------------+\n");
+  printf("| block_size      | time (ms)       | bandwidth (GB/s) |\n");
+  printf("+-----------------+-----------------+------------------+\n");
   for (int j = 0; j < sizeof(block_sizes) / sizeof(int); j++) {
     int block_size = block_sizes[j];
     int repeat_times = 1000;
@@ -216,6 +218,7 @@ int main(int argc, char **argv) {
 #endif
     long memory_ops = B * T * (1 + 3 * C) * bytes_per_op;
     float memory_bandwidth = memory_ops / elapsed_time / 1e6;
-    printf("block_size %d | time %.4f ms | bandwidth %.2f GB/s\n", block_size, elapsed_time, memory_bandwidth);
+    printf("| %4d            | %.4f          | %.2f           |\n", block_size, elapsed_time, memory_bandwidth);
   }
+  printf("+-----------------+-----------------+------------------+\n");
 }
