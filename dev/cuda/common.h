@@ -108,19 +108,19 @@ __device__ Packed128<T> load128(const T *address) {
 // Load a Packed128 from an aligned memory address with streaming cache hint
 template <typename T>
 __device__ Packed128<T> load128cs(const T *address) {
-  return Packed128<T>{__ldcs(reinterpret_cast<const int4*>(address))};
+  return Packed128<T>{__ldcs(reinterpret_cast<const int4 *>(address))};
 }
 
 // Store a Packed128 to an aligned memory address
 template <typename T>
-__device__ void store128(T* target, Packed128<T> value) {
-  *reinterpret_cast<int4*>(target) = value.get_bits();
+__device__ void store128(T *target, Packed128<T> value) {
+  *reinterpret_cast<int4 *>(target) = value.get_bits();
 }
 
 // Store a Packed128 to an aligned memory address with streaming cache hint
 template <typename T>
-__device__ void store128cs(T* target, Packed128<T> value) {
-  __stcs(reinterpret_cast<int4*>(target), value.get_bits());
+__device__ void store128cs(T *target, Packed128<T> value) {
+  __stcs(reinterpret_cast<int4 *>(target), value.get_bits());
 }
 /**
  * Copy from host to device with DType conversion.

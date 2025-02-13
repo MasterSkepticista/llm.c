@@ -75,7 +75,7 @@ __global__ void encoder_forward_kernel3(floatX *out, const int *inp, const float
     x128 wte = load128(wte_bt);
     x128 wpe = load128(wpe_bt);
 
-    #pragma unroll
+#pragma unroll
     for (int k = 0; k < x128::size; k++) {
       packed_out[k] = wte[k] + wpe[k];
     }
@@ -197,7 +197,7 @@ int main(int argc, char **argv) {
   }
 
   // Now that validated, benchmark the kernel.
-  printf("All results match. Starting benchmarks for .\n");
+  printf("All results match. Starting benchmarks.\n");
   printf("+-----------------+-----------------+------------------+\n");
   printf("| block_size      | time (ms)       | bandwidth (GB/s) |\n");
   printf("+-----------------+-----------------+------------------+\n");
