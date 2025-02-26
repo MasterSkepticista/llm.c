@@ -44,7 +44,7 @@ void layernorm_forward_cpu(float *out, float *mean, float *rstd, float *inp, con
 /**
  * Naive parallelism over N=B*T, loop over C - similar to CPU, but on GPU.
  */
-__global__ void layernorm_forward_kernel1(float *out, float *mean, float *rstd, float *inp, const float *weight,
+__global__ void layernorm_forward_kernel1(float *out, float *mean, float *rstd, const float *inp, const float *weight,
                                           const float *bias, int N, int C) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   float eps = 1e-5f;
@@ -195,8 +195,8 @@ __global__ void layernorm_forward_kernel3(float *out, float *mean, float *rstd, 
   }
 }
 
-void layernorm_forward1(float *out, float *mean, float *rstd, float *inp, const float *weight, const float *bias, int B,
-                        int T, int C, int block_size) {
+void layernorm_forward1(float *out, float *mean, float *rstd, const float *inp, const float *weight, const float *bias,
+                        int B, int T, int C, int block_size) {
   int N = B * T;
   int grid_size = ceil_div(N, block_size);
   layernorm_forward_kernel1<<<grid_size, block_size>>>(out, mean, rstd, inp, weight, bias, N, C);
@@ -207,8 +207,8 @@ void layernorm_forward1(float *out, float *mean, float *rstd, float *inp, const 
  * Parallel Reduction for mean/rstd. Normalize in a separate kernel.
  * This requires three kernel invocations.
  */
-void layernorm_forward2(float *out, float *mean, float *rstd, float *inp, const float *weight, const float *bias, int B,
-                        int T, int C, int block_size) {
+void layernorm_forward2(float *out, float *mean, float *rstd, const float *inp, const float *weight, const float *bias,
+                        int B, int T, int C, int block_size) {
   int N = B * T;
   mean_kernel<<<N, block_size, block_size * sizeof(float)>>>(mean, inp, N, C, block_size);
   cudaCheck(cudaGetLastError());
@@ -220,8 +220,8 @@ void layernorm_forward2(float *out, float *mean, float *rstd, float *inp, const 
   cudaCheck(cudaGetLastError());
 }
 
-void layernorm_forward3(float *out, float *mean, float *rstd, float *inp, const float *weight, const float *bias, int B,
-                        int T, int C, int block_size) {
+void layernorm_forward3(float *out, float *mean, float *rstd, const float *inp, const float *weight, const float *bias,
+                        int B, int T, int C, int block_size) {
   assert(block_size % 32 == 0);
   const int N = B * T;
   const int grid_size = ceil_div(N * 32, block_size);
