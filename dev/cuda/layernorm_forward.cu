@@ -195,6 +195,48 @@ __global__ void layernorm_forward_kernel3(float *out, float *mean, float *rstd, 
   }
 }
 
+/**
+ * Same as kernel3, but uses fast variance.
+ */
+__global__ void layernorm_forward_kernel4(float *out, float *mean, float *rstd, const float *inp, const float *weight,
+                                          const float *bias, int N, int C) {
+  namespace cg = cooperative_groups;
+  cg::thread_block block = cg::this_thread_block();
+  cg::thread_block_tile<32> warp = cg::tiled_partition<32>(block);
+  int idx = blockIdx.x * warp.meta_group_size() + warp.meta_group_rank();
+  if (idx >= N) {
+    return;
+  }
+
+  // warp responsible for the row.
+  const float *x = inp + idx * C;
+
+  float sum = 0.0f;
+  float sum2 = 0.0f;
+  for (int i = warp.thread_rank(); i < C; i += warp.size()) {
+    sum += x[i];
+    sum2 += x[i] * x[i];
+  }
+  sum = cg::reduce(warp, sum, cg::plus<float>{});
+  sum2 = cg::reduce(warp, sum2, cg::plus<float>{});
+
+  // Fast variance by eliminating a loop
+  // var(x) = E[x**2] - E[x]**2
+  float m = sum / C;
+  float s = rsqrtf(sum2 / C - m * m + 1e-5f);
+
+  if (warp.thread_rank() == 0 && mean != nullptr && rstd != nullptr) {
+    __stcs(mean + idx, m);
+    __stcs(rstd + idx, s);
+  }
+
+  float *o = out + idx * C;
+  for (int c = warp.thread_rank(); c < C; c += warp.size()) {
+    float n = s * (__ldcs(x + c) - m);
+    __stcs(o + c, n * weight[c] + bias[c]);
+  }
+}
+
 void layernorm_forward1(float *out, float *mean, float *rstd, const float *inp, const float *weight, const float *bias,
                         int B, int T, int C, int block_size) {
   int N = B * T;
@@ -229,7 +271,16 @@ void layernorm_forward3(float *out, float *mean, float *rstd, const float *inp, 
   cudaCheck(cudaGetLastError());
 }
 
-void layernorm_forward(int kernel_num, float *out, float *mean, float *rstd, float *inp, const float *weight,
+void layernorm_forward4(float *out, float *mean, float *rstd, const float *inp, const float *weight, const float *bias,
+                        int B, int T, int C, int block_size) {
+  assert(block_size % 32 == 0);
+  const int N = B * T;
+  const int grid_size = ceil_div(N * 32, block_size);
+  layernorm_forward_kernel4<<<grid_size, block_size>>>(out, mean, rstd, inp, weight, bias, N, C);
+  cudaCheck(cudaGetLastError());
+}
+
+void layernorm_forward(int kernel_num, float *out, float *mean, float *rstd, const float *inp, const float *weight,
                        const float *bias, int B, int T, int C, int block_size) {
   switch (kernel_num) {
     case 1:
@@ -240,6 +291,9 @@ void layernorm_forward(int kernel_num, float *out, float *mean, float *rstd, flo
       break;
     case 3:
       layernorm_forward3(out, mean, rstd, inp, weight, bias, B, T, C, block_size);
+      break;
+    case 4:
+      layernorm_forward4(out, mean, rstd, inp, weight, bias, B, T, C, block_size);
       break;
     default:
       printf("Invalid kernel number.");
