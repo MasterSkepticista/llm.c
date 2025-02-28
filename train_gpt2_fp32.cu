@@ -2,6 +2,8 @@
  GPT-2 Training loop for CUDA.
  $> nvcc train_gpt2_fp32.cu -o train_gpt2_fp32 -lcublas && ./train_gpt2_fp32
 */
+#include <cooperative_groups.h>
+#include <cooperative_groups/reduce.h>
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
 #include <stdio.h>
@@ -38,14 +40,17 @@ void cublasCheck(cublasStatus_t status, const char *file, int line) {
 /**
  * Ceildiv helper
  */
-#define CEIL_DIV(x, y) (((x) + (y)-1) / (y))
+#define CEIL_DIV(x, y) (((x) + (y) - 1) / (y))
 
-// Kernels
+// Kernels (not using dev/cuda kernels as these are in f32)
 
 __device__ inline float4 add_float4(const float4 &a, const float4 &b) {
   return make_float4(a.x + b.x, a.y + b.y, a.z + b.z, a.w + b.w);
 }
 
+/**
+ * Parallelize over B*T, vectorize in chunks of 4 over C.
+ */
 __global__ void encoder_forward_kernel3(float4 *out, const int *inp, const float4 *wte, const float4 *wpe, int B, int T,
                                         int C) {
   int C4 = C / 4;
@@ -60,6 +65,49 @@ __global__ void encoder_forward_kernel3(float4 *out, const int *inp, const float
     out[b * T * C4 + t * C4 + c4] = add_float4(wte[ix * C4 + c4], wpe[t * C4 + c4]);
   }
 }
+
+/**
+ * Fast variance version.
+ */
+__global__ void layernorm_forward_kernel4(float *out, float *mean, float *rstd, const float *inp, const float *weight,
+                                          const float *bias, int N, int C) {
+  namespace cg = cooperative_groups;
+  cg::thread_block block = cg::this_thread_block();
+  cg::thread_block_tile<32> warp = cg::tiled_partition<32>(block);
+  int idx = blockIdx.x * warp.meta_group_size() + warp.meta_group_rank();
+  if (idx >= N) {
+    return;
+  }
+
+  // warp responsible for the row.
+  const float *x = inp + idx * C;
+
+  float sum = 0.0f;
+  float sum2 = 0.0f;
+  for (int i = warp.thread_rank(); i < C; i += warp.size()) {
+    sum += x[i];
+    sum2 += x[i] * x[i];
+  }
+  sum = cg::reduce(warp, sum, cg::plus<float>{});
+  sum2 = cg::reduce(warp, sum2, cg::plus<float>{});
+
+  // Fast variance by eliminating a loop
+  // var(x) = E[x**2] - E[x]**2
+  float m = sum / C;
+  float s = rsqrtf(sum2 / C - m * m + 1e-5f);
+
+  if (warp.thread_rank() == 0 && mean != nullptr && rstd != nullptr) {
+    __stcs(mean + idx, m);
+    __stcs(rstd + idx, s);
+  }
+
+  float *o = out + idx * C;
+  for (int c = warp.thread_rank(); c < C; c += warp.size()) {
+    float n = s * (__ldcs(x + c) - m);
+    __stcs(o + c, n * weight[c] + bias[c]);
+  }
+}
+
 // Launchers
 
 /**
@@ -75,6 +123,19 @@ void encoder_forward(float *out, const int *inp, const float *wte, const float *
   const int N = B * T * C;
   const int grid_size = CEIL_DIV(N / 4, block_size);
   encoder_forward_kernel3<<<grid_size, block_size>>>((float4 *)out, inp, (float4 *)wte, (float4 *)wpe, B, T, C);
+  cudaCheck(cudaGetLastError());
+}
+
+/**
+ * LayerNorm forward.
+ * @param
+ */
+void layernorm_forward(float *out, float *mean, float *rstd, const float *inp, const float *weight, const float *bias,
+                       int B, int T, int C) {
+  const int block_size = 32;
+  const int N = B * T;
+  const int grid_size = CEIL_DIV(N * 32, block_size);
+  layernorm_forward_kernel4<<<grid_size, block_size>>>(out, mean, rstd, inp, weight, bias, N, C);
   cudaCheck(cudaGetLastError());
 }
 
@@ -408,8 +469,24 @@ void gpt2_forward(GPT2 *model, int *inputs, int *targets, int B, int T) {
   ActivationTensors acts = model->acts;
   float *residual;
   encoder_forward(acts.encoded, model->inputs, params.wte, params.wpe, B, T, C);
-  // encoder forward
+
   // loop - layers forward
+  for (int l = 0; l < L; l++) {
+    residual = (l == 0) ? acts.encoded : acts.residual3 + (l - 1) * B * T * C;
+
+    // Params for this layer.
+    float *l_ln1w = params.ln1w + l * C;
+    float *l_ln1b = params.ln1b + l * C;
+    float *l_qkvw = params.qkvw + l * 3 * C * C;
+
+    // Activations for this layer.
+    float *l_ln1 = acts.ln1 + l * B * T * C;
+    float *l_ln1_mean = acts.ln1_mean + l * B * T;
+    float *l_ln1_rstd = acts.ln1_rstd + l * B * T;
+
+    layernorm_forward(l_ln1, l_ln1_mean, l_ln1_rstd, residual, l_ln1w, l_ln1b, B, T, C);
+    // matmul_forward()
+  }
   // final ln forward
   // decode to logits
   // ce forward?
