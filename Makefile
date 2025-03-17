@@ -1,6 +1,6 @@
 # somehow `cc` faster than `clang` in math mode
 CC ?= clang
-CFLAGS = -Ofast -Wno-unused-result -Wno-ignored-pragmas -Wno-unknown-attributes
+CFLAGS = -O3 -ffast-math -Wno-unused-result -Wno-ignored-pragmas -Wno-unknown-attributes
 LDLIBS = -lm
 CFLAGS_COND = -march=native
 

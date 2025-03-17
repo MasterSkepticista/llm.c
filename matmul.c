@@ -1,4 +1,6 @@
 #include <stdio.h>
+#include <stdint.h>
+#include <string.h>
 #include <time.h>
 
 #include "llmc/rand.h"
@@ -7,6 +9,14 @@
 #ifdef OMP
 #include <omp.h>
 #endif
+
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+
+double tick() {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return ts.tv_sec * 1000.0 + ts.tv_nsec / 1e6;
+}
 
 void print_matrix(float *m, int rows, int cols) {
   printf("_____________\n");
@@ -18,15 +28,6 @@ void print_matrix(float *m, int rows, int cols) {
     printf("]\n");
   }
   printf("_____________\n");
-}
-
-/**
- * Initialize an array with a constant.
- */
-void constant_(float *m, int numel, float val) {
-  for (int i = 0; i < numel; i++) {
-    m[i] = val;
-  }
 }
 
 void transpose_(float *m, int rows, int cols) {
@@ -44,78 +45,34 @@ void transpose_(float *m, int rows, int cols) {
 
 void allclose(float *a, float *b, int numel, float rtol) {
   for (int i = 0; i < numel; i++) {
-    if (fabsf(a[i] - b[i]) > 1e-3) {
+    if (fabsf(a[i] - b[i]) > rtol) {
       printf("mismatch at idx %d, %f != %f \n", i, a[i], b[i]);
       exit(1);
     }
   }
-  printf("match\n");
 }
 
-void matmul(float *left, float *right, float *out, int rows, int inners, int cols) {
-#pragma omp parallel for
-  for (int row = 0; row < rows; row++) {
-    for (int inner = 0; inner < inners; inner++) {
-      for (int col = 0; col < cols; col++) {
-        out[row * cols + col] += left[row * cols + inner] * right[inner * cols + col];
-      }
-    }
-  }
-}
+#define BLOCK 4
 
-void matmul_tiled(float *left, float *right, float *out, int rows, int inners, int cols) {
-  const int TILE_SIZE = 8;
-
-#pragma omp parallel for
-  for (int i = 0; i < rows; i += TILE_SIZE) {
-    for (int j = 0; j < inners; j++) {
-      // initialize tile with zeros
-      float tile[TILE_SIZE];
-      for (int t = 0; t < TILE_SIZE; t++) {
-        tile[t] = 0.0f;
-      }
-
-      for (int k = 0; k < cols; k++) {
-        for (int t = 0; t < TILE_SIZE; t++) {
-          int it = i + t;
-          tile[t] += left[it * inners + k] * right[j * cols + k];
+void matmul(const float *left, const float *right, float *out, int rows, int inners, int cols) {
+  // #pragma omp parallel for collapse(2) shared(left, right, out)
+  for (int by = 0; by < rows; by += BLOCK) {
+    for (int bx = 0; bx < cols; bx += BLOCK) {
+      float tc[BLOCK][BLOCK] = {};
+      // Compute
+      for (int k = 0; k < inners; k++) {
+        for (int y = 0; y < BLOCK; y++) {
+          for (int x = 0; x < BLOCK; x++) {
+            tc[y][x] += left[(by + y) * inners + k] * right[(bx + x) * cols + k];
+          }
         }
       }
 
-      // writeback
-      for (int t = 0; t < TILE_SIZE; t++) {
-        int it = i + t;
-        out[it * cols + j] = tile[t];
-      }
-    }
-  }
-}
-
-void matmul_tiled2(float *out, const float *inp, const float *weight, const float *bias, int BT, int C, int OC) {
-  const int LOOP_UNROLL = 8;
-#pragma omp parallel for
-  for (int obt = 0; obt < BT; obt += LOOP_UNROLL) {
-    for (int o = 0; o < OC; o++) {
-      // we'll keep LOOP_UNROLL many results in registers
-      float result[LOOP_UNROLL];
-      // initialize the bias, if it exists
-      for (int ibt = 0; ibt < LOOP_UNROLL; ibt++) {
-        result[ibt] = (bias != NULL) ? bias[o] : 0.0f;
-      }
-      // inner loops. Because we do LOOP_UNROLL steps of inner bt, we can cache
-      // the value of weight[i + o * C] and reuse it.
-      // we compile with -Ofast, so the compiler will turn the inner loop into FMAs
-      for (int i = 0; i < C; i++) {
-        float w = weight[i + o * C];
-        for (int ibt = 0; ibt < LOOP_UNROLL; ibt++) {
-          int bt = obt + ibt;
-          result[ibt] += inp[bt * C + i] * w;
+      // Store
+      for (int y = 0; y < BLOCK; y++) {
+        for (int x = 0; x < BLOCK; x++) {
+          out[(by + y) * cols + (bx + x)] = tc[y][x];
         }
-      }
-      // write back results to main memory
-      for (int ibt = 0; ibt < LOOP_UNROLL; ibt++) {
-        int bt = obt + ibt;
-        out[bt * OC + o] = result[ibt];
       }
     }
   }
@@ -124,14 +81,22 @@ void matmul_tiled2(float *out, const float *inp, const float *weight, const floa
 #ifdef DEBUG
 #define N 4
 #else
-#define N 4096
+#define N 2048
 #endif
 
+float A[N * N] __attribute__((aligned(32)));
+float B[N * N] __attribute__((aligned(32)));
+float C[N * N] __attribute__((aligned(32)));
+float val[N * N] __attribute__((aligned(32)));
+
 int main() {
-  float *A = (float *)mallocCheck(sizeof(float) * N * N);
-  float *B = (float *)mallocCheck(sizeof(float) * N * N);
-  float *C = (float *)mallocCheck(sizeof(float) * N * N);
-  float *val = (float *)mallocCheck(sizeof(float) * N * N);
+  printf("Starting...\n");
+  /**
+   * Xeon 6258R
+   * 2 AVX-512 FMA units
+   * = 2 * 16 * 2 = 64 FLOP/cycle
+   * = 2.7 * 64 = 172.8 GFLOP/s at 2.7GHz
+   */
 
   // initialize
   FILE *file = fopenCheck("/tmp/matmul", "rb");
@@ -139,23 +104,21 @@ int main() {
   freadCheck(B, 1, sizeof(float) * N * N, file);
   freadCheck(C, 1, sizeof(float) * N * N, file);
   fcloseCheck(file);
+  memset(val, 0, sizeof(float) * N * N);
+
+  // Validate result
+  matmul(A, B, val, N, N, N);
+  allclose(val, C, N*N, 1e-3f);
+  printf("Results verified, starting benchmarks...\n");
 
   // prints
-  size_t total_flop = 2.0 * N * N * N;
-  struct timespec start, end;
-
-  transpose_(B, N, N);
-  for (int i = 0; i < 10; i++) {
-    constant_(val, N * N, 0.0f);
-
-    clock_gettime(CLOCK_MONOTONIC, &start);
-    // matmul(A, B, val, N, N, N);
-    matmul_tiled(A, B, val, N, N, N);
-    // matmul_tiled2(val, A, B, NULL, N, N, N);
-    clock_gettime(CLOCK_MONOTONIC, &end);
-    double cpu_time_used = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
-    printf("GFLOP/s: %f\n", (total_flop / 1e9) / cpu_time_used);
-    allclose(val, C, N * N, 1e-5f);
+  int repeats = 2;
+  for (int i = 0; i < repeats; i++) {
+    uint64_t start = tick();
+    matmul(A, B, val, N, N, N);
+    uint64_t stop = tick();
+    double elapsed_time = (stop - start) * 1e-3;
+    printf("GFLOP/s: %f\n", (2.0 * N * N * N * 1e-9) / elapsed_time);
   }
 
 #ifdef DEBUG
