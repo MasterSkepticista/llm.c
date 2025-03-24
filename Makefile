@@ -32,9 +32,6 @@ all: $(TARGETS)
 train_gpt2: train_gpt2.c
 	$(CC) $(CFLAGS) $(CFLAGS_COND) $^ $(LDLIBS) -o $@
 
-matmul: matmul.c
-	$(CC) $(CFLAGS) $(CFLAGS_COND) $^ $(LDLIBS) -o $@
-
 train_gpt2_fp32: train_gpt2_fp32.cu
 	$(NVCC) $(NVCC_FLAGS) $(NVCC_LDFLAGS) $^ -o $@
 
